@@ -1501,33 +1501,52 @@ export function Dashboard() {
 
       const teamsChatId = await getTeamsChatId();
 
-      // 3. Gerar print do painel usando html2canvas de forma resiliente
+      // 3. Gerar print de altíssima qualidade do painel usando html2canvas de forma direta e sem distorções
       let base64Image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="; //Fallback de 1x1 png transparente
       const targetElement = document.getElementById('main-dashboard') || document.body;
       
       if (targetElement) {
-        let cleanupScreenshotClone = () => {};
+        const elementsToHideQuery = [
+          '#dashboard-header-print-ignore',
+          '#dashboard-kpi-block-print-ignore',
+          '#header-teams-config',
+          '.modal-excluir'
+        ];
+        
+        const hiddenElements: { element: HTMLElement; originalDisplay: string }[] = [];
+        const originalScrollY = window.scrollY;
+        const originalScrollX = window.scrollX;
+
         try {
-          const safeClone = createHtml2CanvasSafeClone(
-            targetElement as HTMLElement,
-            isWarRoom
-          );
-          cleanupScreenshotClone = safeClone.cleanup;
+          // Ocultar os elementos temporariamente no próprio DOM ativo para integridade absoluta dos estilos
+          elementsToHideQuery.forEach(query => {
+            document.querySelectorAll(query).forEach(el => {
+              const htmlEl = el as HTMLElement;
+              hiddenElements.push({
+                element: htmlEl,
+                originalDisplay: htmlEl.style.display
+              });
+              htmlEl.style.setProperty('display', 'none', 'important');
+            });
+          });
+
+          // Rolar temporariamente para o topo (0,0) de forma a evitar cortes no html2canvas causados por scroll
+          window.scrollTo(0, 0);
 
           const scaleStr = process.env.TEAMS_SCREENSHOT_SCALE;
-          const captureScale = scaleStr ? parseFloat(scaleStr) : 1.8;
+          // Subimos o padrão para 2.5 para qualidade Retina cristalina, ou 3.0 se configurado
+          const captureScale = scaleStr ? parseFloat(scaleStr) : 2.5;
 
           const canvas = await withCleanedEnvironment(async () => {
-            return await html2canvas(safeClone.clone, {
+            return await html2canvas(targetElement, {
               useCORS: true,
               allowTaint: true,
               backgroundColor: isWarRoom ? '#050510' : '#f8fafc',
-              scale: captureScale, // Escala configurável por variável de ambiente ou 1.8 por padrão
+              scale: captureScale, 
               logging: false,
-              ignoreElements: (element) => {
-                // Ignorar botões do cabeçalho e modais flutuantes se houver
-                return element.classList?.contains('modal-excluir') || element.id === 'header-teams-config';
-              }
+              imageTimeout: 0,
+              scrollX: 0,
+              scrollY: 0,
             });
           });
 
@@ -1538,7 +1557,17 @@ export function Dashboard() {
         } catch (screenshotErr) {
           console.error("[Teams] Erro ao obter print da tela via html2canvas:", screenshotErr);
         } finally {
-          cleanupScreenshotClone();
+          // Restaurar a posição de rolagem original imediatamente
+          window.scrollTo(originalScrollX, originalScrollY);
+
+          // Restaurar o estilo display original de todos os elementos ocultados
+          hiddenElements.forEach(({ element, originalDisplay }) => {
+            if (originalDisplay) {
+              element.style.setProperty('display', originalDisplay);
+            } else {
+              element.style.removeProperty('display');
+            }
+          });
         }
       }
 
