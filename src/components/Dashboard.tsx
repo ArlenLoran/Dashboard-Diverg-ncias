@@ -436,42 +436,44 @@ function copyCanvases(original: HTMLElement, clone: HTMLElement) {
   }
 }
 
-function copyAndCleanComputedStyles(original: HTMLElement, clone: HTMLElement) {
-  const originalElements = [original, ...Array.from(original.querySelectorAll('*'))] as HTMLElement[];
-  const cloneElements = [clone, ...Array.from(clone.querySelectorAll('*'))] as HTMLElement[];
+function copyStylesRecursive(original: Element, clone: Element) {
+  if (!(original instanceof HTMLElement || original instanceof SVGElement) ||
+      !(clone instanceof HTMLElement || clone instanceof SVGElement)) {
+    return;
+  }
+  const style = window.getComputedStyle(original);
   
-  for (let i = 0; i < originalElements.length; i++) {
-    const origEl = originalElements[i];
-    const cloneEl = cloneElements[i];
-    if (!origEl || !cloneEl) continue;
-    
-    const style = window.getComputedStyle(origEl);
-    
-    const propertiesToCopy = [
-      'color', 'background-color', 'background',
-      'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
-      'box-shadow', 'fill', 'stroke', 'outline-color', 'outline',
-      'background-image'
-    ];
-    
-    for (const prop of propertiesToCopy) {
-      try {
-        let val = style.getPropertyValue(prop);
-        if (val) {
-          if (val.includes('oklch') || val.includes('oklab')) {
-            val = replaceOklchOklabValues(val);
-          }
-          cloneEl.style.setProperty(prop, val, 'important');
+  const propertiesToCopy = [
+    'color', 'background-color', 'background',
+    'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+    'box-shadow', 'fill', 'stroke', 'outline-color', 'outline',
+    'background-image'
+  ];
+  
+  for (const prop of propertiesToCopy) {
+    try {
+      let val = style.getPropertyValue(prop);
+      if (val) {
+        if (val.includes('oklch') || val.includes('oklab')) {
+          val = replaceOklchOklabValues(val);
         }
-      } catch (e) {
-        // Safe skip
+        clone.style.setProperty(prop, val, 'important');
       }
+    } catch (e) {
+      // Safe skip
     }
-    
-    const inlineStyle = cloneEl.getAttribute('style');
-    if (inlineStyle && (inlineStyle.includes('oklch') || inlineStyle.includes('oklab'))) {
-      cloneEl.setAttribute('style', replaceOklchOklabValues(inlineStyle));
-    }
+  }
+  
+  const inlineStyle = clone.getAttribute('style');
+  if (inlineStyle && (inlineStyle.includes('oklch') || inlineStyle.includes('oklab'))) {
+    clone.setAttribute('style', replaceOklchOklabValues(inlineStyle));
+  }
+
+  const origChildren = Array.from(original.children);
+  const cloneChildren = Array.from(clone.children);
+  const minLength = Math.min(origChildren.length, cloneChildren.length);
+  for (let i = 0; i < minLength; i++) {
+    copyStylesRecursive(origChildren[i], cloneChildren[i]);
   }
 }
 
@@ -483,11 +485,24 @@ interface SafeCloneResult {
 function createHtml2CanvasSafeClone(targetElement: HTMLElement, isWarRoom: boolean): SafeCloneResult {
   const rect = targetElement.getBoundingClientRect();
   const width = rect.width || targetElement.scrollWidth || 1200;
-  const height = rect.height || targetElement.scrollHeight || 800;
   
   const clone = targetElement.cloneNode(true) as HTMLElement;
 
-  // Remover Header e Painel de Resumo do print
+  // 1. Copiar estados e estilos de forma recursiva na árvore 1-para-1 perfeitamente intacta
+  try {
+    copyInputStates(targetElement, clone);
+    copyCanvases(targetElement, clone);
+  } catch (e) {
+    console.warn("[Teams/Clone] Error copying element states:", e);
+  }
+  
+  try {
+    copyStylesRecursive(targetElement, clone);
+  } catch (e) {
+    console.warn("[Teams/Clone] Error copying and cleaning styles recursively:", e);
+  }
+
+  // 2. Agora, com os estilos aplicados de forma precisa, remover elementos indesejados do clone
   const headerToIgnore = clone.querySelector('#dashboard-header-print-ignore');
   if (headerToIgnore && headerToIgnore.parentNode) {
     headerToIgnore.parentNode.removeChild(headerToIgnore);
@@ -517,19 +532,6 @@ function createHtml2CanvasSafeClone(targetElement: HTMLElement, isWarRoom: boole
   
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
-  
-  try {
-    copyInputStates(targetElement, clone);
-    copyCanvases(targetElement, clone);
-  } catch (e) {
-    console.warn("[Teams/Clone] Error copying element states:", e);
-  }
-  
-  try {
-    copyAndCleanComputedStyles(targetElement, clone);
-  } catch (e) {
-    console.warn("[Teams/Clone] Error copying and cleaning styles:", e);
-  }
   
   return {
     clone: wrapper,
@@ -1659,7 +1661,7 @@ export function Dashboard() {
                   // Remover divisões que não sejam a divisão alvo do alerta
                   clonedSec.parentNode?.removeChild(clonedSec);
                 } else {
-                  // Na nossa divisão alvo, remover cards estáveis (status === 'ok') para destacar apenas os críticos
+                  // Na nossa divisão alvo, manter o card reportado (mesmo se estiver OK) e todos os críticos, remover os estáveis
                   const cardElements = Array.from(clonedSec.querySelectorAll('[id^="card-"]')) as HTMLElement[];
                   cardElements.forEach(cardEl => {
                     const cardId = cardEl.id;
@@ -1667,19 +1669,22 @@ export function Dashboard() {
                     const metricObj = targetSec?.metrics.find(m => String(m.id) === metricId);
                     
                     if (metricObj) {
-                      if (metricObj.status !== 'error') {
+                      const isReportedCard = metricObj.title.trim().toLowerCase() === metricTitle.trim().toLowerCase();
+                      const isCritical = metricObj.status === 'error';
+                      if (!isReportedCard && !isCritical) {
                         cardEl.parentNode?.removeChild(cardEl);
                       }
                     } else {
                       // Fallback por comparação de título caso ID mude
                       const h3El = cardEl.querySelector('h3');
                       const cardTitle = h3El ? h3El.textContent?.trim().toLowerCase() : '';
+                      const targetTitleLower = metricTitle.trim().toLowerCase();
+                      const isReportedCard = cardTitle === targetTitleLower;
+                      
                       const metricObjByTitle = targetSec?.metrics.find(m => m.title.trim().toLowerCase() === cardTitle);
-                      if (metricObjByTitle) {
-                        if (metricObjByTitle.status !== 'error') {
-                          cardEl.parentNode?.removeChild(cardEl);
-                        }
-                      } else {
+                      const isCritical = metricObjByTitle ? metricObjByTitle.status === 'error' : false;
+                      
+                      if (!isReportedCard && !isCritical) {
                         cardEl.parentNode?.removeChild(cardEl);
                       }
                     }
@@ -1693,27 +1698,40 @@ export function Dashboard() {
                 }
               });
             } else {
-              // Fallback: Se não encontrarmos a divisão pelo título, filtramos todas as divisões para mostrar apenas cards críticos
+              // Fallback: Se não encontrarmos a divisão pelo título, filtramos todas as divisões para mostrar apenas o card reportado e os críticos
               clonedSecs.forEach(clonedSec => {
                 const h2El = clonedSec.querySelector('h2');
                 const clonedSecTitle = h2El ? h2El.textContent?.trim().toLowerCase() : '';
                 const matchedSecData = data.find(s => s.title.trim().toLowerCase() === clonedSecTitle);
 
                 const cardElements = Array.from(clonedSec.querySelectorAll('[id^="card-"]')) as HTMLElement[];
-                let criticalCount = 0;
+                let visibleCount = 0;
                 cardElements.forEach(cardEl => {
                   const cardId = cardEl.id;
                   const metricId = cardId.replace('card-', '');
                   const metricObj = matchedSecData?.metrics.find(m => String(m.id) === metricId);
                   
-                  if (metricObj && metricObj.status === 'error') {
-                    criticalCount++;
+                  if (metricObj) {
+                    const isReportedCard = metricObj.title.trim().toLowerCase() === metricTitle.trim().toLowerCase();
+                    const isCritical = metricObj.status === 'error';
+                    if (isReportedCard || isCritical) {
+                      visibleCount++;
+                    } else {
+                      cardEl.parentNode?.removeChild(cardEl);
+                    }
                   } else {
-                    cardEl.parentNode?.removeChild(cardEl);
+                    const h3El = cardEl.querySelector('h3');
+                    const cardTitle = h3El ? h3El.textContent?.trim().toLowerCase() : '';
+                    const isReportedCard = cardTitle === metricTitle.trim().toLowerCase();
+                    if (isReportedCard) {
+                      visibleCount++;
+                    } else {
+                      cardEl.parentNode?.removeChild(cardEl);
+                    }
                   }
                 });
 
-                if (criticalCount === 0) {
+                if (visibleCount === 0) {
                   clonedSec.parentNode?.removeChild(clonedSec);
                 } else {
                   const scrollIndicator = clonedSec.querySelector('.flex.items-center.justify-between.mt-2.px-4.w-full');
