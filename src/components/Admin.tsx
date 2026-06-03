@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { 
   Plus, Edit2, Trash2, ChevronRight, Settings, Layout, 
   Activity, Shield, Clock, BookOpen, Database, Save, X,
-  AlertTriangle, Filter, ArrowLeft, Lock, GripVertical, ChevronUp, ChevronDown, Mail, HelpCircle, Sparkles, History
+  AlertTriangle, Filter, ArrowLeft, Lock, GripVertical, ChevronUp, ChevronDown, Mail, HelpCircle, Sparkles, History, Play
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Section, Metric } from '../types';
+import { postSqlQuery } from '../services/queryService';
 import { 
   fetchDashboardConfig, 
   ensureSharePointConfig,
@@ -75,6 +76,11 @@ export function Admin() {
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [testTeamsLink, setTestTeamsLink] = useState('');
   const [extractedIdResult, setExtractedIdResult] = useState('');
+
+  // Query Validation states
+  const [lastValidatedQuery, setLastValidatedQuery] = useState<string | null>(null);
+  const [isValidatingQuery, setIsValidatingQuery] = useState(false);
+  const [queryValidationFeedback, setQueryValidationFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
   // Audit Log state
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
@@ -423,8 +429,88 @@ export function Admin() {
     }
   };
 
+  const isQueryValid = (() => {
+    const qText = (metricForm.sqlQuery || '').trim();
+    if (!qText) return false; // Query vazia não é permitida
+    if (lastValidatedQuery === null) return false;
+    return qText === lastValidatedQuery.trim();
+  })();
+
+  const handleValidateQuery = async () => {
+    const qText = (metricForm.sqlQuery || '').trim();
+    if (!qText) {
+      setQueryValidationFeedback({
+        type: 'error',
+        message: 'A Query SQL precisa ser preenchida para ser validada.'
+      });
+      setLastValidatedQuery(null);
+      return;
+    }
+
+    setIsValidatingQuery(true);
+    setQueryValidationFeedback(null);
+    try {
+      await postSqlQuery(qText, editingMetric?.metric.id || 'new');
+      
+      // Validação com sucesso!
+      setLastValidatedQuery(metricForm.sqlQuery);
+      setQueryValidationFeedback({
+        type: 'success',
+        message: 'Query validada e estrutura executável com sucesso!'
+      });
+    } catch (err: any) {
+      console.error("Erro na validação de query:", err);
+      let errMsg = err?.message || 'Erro desconhecido ao processar query';
+      if (typeof errMsg === 'object') {
+        try {
+          errMsg = JSON.stringify(errMsg);
+        } catch (e) {
+          errMsg = 'Erro de estrutura na resposta do servidor';
+        }
+      }
+      
+      if (errMsg.includes('502') || errMsg.includes('NoResponse') || errMsg.includes('upstream')) {
+        errMsg = `Erro HTTP 502 (Upstream/NoResponse) - Servidor remoto não respondeu ou sintaxe está incorreta. Revise a query.`;
+      }
+      
+      setQueryValidationFeedback({
+        type: 'error',
+        message: errMsg
+      });
+      setLastValidatedQuery(null);
+    } finally {
+      setIsValidatingQuery(false);
+    }
+  };
+
   const handleSaveMetric = async () => {
-    if (!metricForm.title.trim() || !editingMetric?.divisionId) return;
+    if (!editingMetric?.divisionId) return;
+
+    if (!metricForm.title.trim()) {
+      setModalError("O campo 'Título do Card' é obrigatório.");
+      return;
+    }
+
+    if (!metricForm.refreshInterval || metricForm.refreshInterval <= 0) {
+      setModalError("O campo 'Intervalo de Atualização' é obrigatório e deve ser um valor maior que zero.");
+      return;
+    }
+
+    if (!metricForm.objective.trim()) {
+      setModalError("O campo 'Objetivo (Descrição)' é obrigatório.");
+      return;
+    }
+
+    if (!metricForm.sqlQuery.trim()) {
+      setModalError("O campo 'Query SQL' é obrigatório.");
+      return;
+    }
+    
+    if (!isQueryValid) {
+      setModalError("É necessário clicar em 'Validar Query' e obter sucesso antes de registar/salvar este card de métrica.");
+      return;
+    }
+
     setIsSaving(true);
     setStatusMessage(null);
     setModalError(null);
@@ -442,7 +528,7 @@ export function Admin() {
       }
 
       if (editingMetric.metric.id !== 'new') {
-        await updateMetric(editingMetric.metric.id, metricForm);
+         await updateMetric(editingMetric.metric.id, metricForm);
       } else {
         await addMetric(editingMetric.divisionId, metricForm);
       }
@@ -466,6 +552,8 @@ export function Admin() {
       sqlQuery: '',
       refreshInterval: 5
     });
+    setLastValidatedQuery(null);
+    setQueryValidationFeedback(null);
     setEditingMetric({ 
       metric: { id: 'new', title: '', value: 0, status: 'ok', lastUpdate: '', isDynamic: true, details: [], history: [], rules: [] }, 
       divisionId: divisionId
@@ -939,7 +1027,9 @@ export function Admin() {
                                   sqlQuery: metric.sqlQuery || '',
                                   refreshInterval: metric.refreshInterval || 5
                                 });
-                                setEditingMetric({ metric, divisionId: section.id || '' });
+                                setLastValidatedQuery(metric.sqlQuery || '');
+                                 setQueryValidationFeedback(null);
+                                 setEditingMetric({ metric, divisionId: section.id || '' });
                                 setIsMetricModalOpen(true);
                               }}
                               className="px-2.5 sm:px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-1.5"
@@ -1058,7 +1148,10 @@ export function Admin() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6">
                   <div className="space-y-5 sm:space-y-6">
                     <div>
-                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><Activity className="w-3 h-3" /> Título do Card</label>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">
+                        <Activity className="w-3 h-3" /> Título do Card
+                        <span className="text-[8px] text-brand-red font-black tracking-widest bg-red-50 border border-red-200 px-1.5 py-0.5 rounded ml-auto leading-none">Obrigatório</span>
+                      </label>
                       <input 
                         type="text" 
                         value={metricForm.title}
@@ -1068,7 +1161,10 @@ export function Admin() {
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><Clock className="w-3 h-3" /> Intervalo de Atualização (Minutos)</label>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">
+                        <Clock className="w-3 h-3" /> Intervalo de Atualização (Minutos)
+                        <span className="text-[8px] text-brand-red font-black tracking-widest bg-red-50 border border-red-200 px-1.5 py-0.5 rounded ml-auto leading-none">Obrigatório</span>
+                      </label>
                       <input 
                         type="number" 
                         value={metricForm.refreshInterval}
@@ -1079,7 +1175,10 @@ export function Admin() {
                   </div>
 
                   <div>
-                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><BookOpen className="w-3 h-3" /> Objetivo (Descrição)</label>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">
+                      <BookOpen className="w-3 h-3" /> Objetivo (Descrição)
+                      <span className="text-[8px] text-brand-red font-black tracking-widest bg-red-50 border border-red-200 px-1.5 py-0.5 rounded ml-auto leading-none">Obrigatório</span>
+                    </label>
                     <textarea 
                       value={metricForm.objective}
                       onChange={(e) => setMetricForm({...metricForm, objective: e.target.value})}
@@ -1090,16 +1189,109 @@ export function Admin() {
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><Database className="w-3 h-3" /> Query SQL (Fonte de Dados)</label>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">
+                    <Database className="w-3 h-3" /> Query SQL (Fonte de Dados)
+                    <span className="text-[8px] text-brand-red font-black tracking-widest bg-red-50 border border-red-200 px-1.5 py-0.5 rounded ml-auto leading-none">Obrigatório</span>
+                  </label>
                   <textarea 
                     value={metricForm.sqlQuery}
                     onChange={(e) => setMetricForm({...metricForm, sqlQuery: e.target.value})}
-                    className="w-full h-[120px] sm:h-[150px] px-4 py-3 bg-slate-950 text-emerald-500 font-mono text-xs sm:text-sm border-2 border-slate-800 rounded-xl outline-none focus:border-brand-red transition-all resize-none shadow-inner"
+                    className="w-full h-[120px] sm:h-[150px] px-4 py-3 bg-slate-950 text-emerald-400 font-mono text-xs sm:text-sm border-2 border-slate-800 rounded-xl outline-none focus:border-brand-red transition-all resize-none shadow-inner"
                     placeholder="SELECT * FROM TABELA WHERE..."
                   />
-                  <div className="mt-2 text-[9px] text-slate-400 font-bold uppercase p-3 bg-slate-100 rounded-lg flex items-start gap-2">
+                  
+                  {/* Botão de Validação e Feedback Inline */}
+                  <div className="mt-3 flex flex-col gap-3">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleValidateQuery}
+                        disabled={isValidatingQuery}
+                        className={`px-5 py-2.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2 border cursor-pointer select-none ${
+                          isValidatingQuery
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : isQueryValid
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100 active:scale-95'
+                              : 'bg-red-50 border-red-200 text-brand-red hover:bg-red-100 active:scale-95'
+                        }`}
+                      >
+                        {isValidatingQuery ? (
+                          <>
+                            <Activity className="w-3.5 h-3.5 animate-spin" />
+                            Validando...
+                          </>
+                        ) : isQueryValid ? (
+                          <>
+                            <Shield className="w-3.5 h-3.5 text-emerald-500" />
+                            Query Validada
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3.5 h-3.5" />
+                            Validar Query
+                          </>
+                        )}
+                      </button>
+
+                      <div className="flex-grow">
+                        {!metricForm.sqlQuery.trim() ? (
+                          <div className="p-2.5 px-3.5 rounded-xl border border-red-200 bg-red-50 text-brand-red text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 text-brand-red animate-pulse" />
+                            <span>A Query SQL está em branco. Preencha este campo obrigatório com sua consulta.</span>
+                          </div>
+                        ) : isQueryValid ? (
+                          <div className="p-2.5 px-3.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+                            <Shield className="w-4 h-4 text-emerald-500" />
+                            <span>Query estabelecida e estruturalmente válida para execução.</span>
+                          </div>
+                        ) : !queryValidationFeedback ? (
+                          <div className="p-2.5 px-3.5 rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-500 animate-pulse" />
+                            <span>Query alterada ou não validada. Clique no botão de validação ao lado para liberar a gravação.</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {metricForm.sqlQuery.trim() && queryValidationFeedback && (
+                      <div className={`p-4 rounded-xl border flex flex-col gap-2 transition-all ${
+                        queryValidationFeedback.type === 'success'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-850'
+                          : 'bg-red-50 border-red-200 text-red-950'
+                      }`}>
+                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wider">
+                          {queryValidationFeedback.type === 'success' ? (
+                            <>
+                              <Shield className="w-4 h-4 text-emerald-500" />
+                              <span>Validação Concluída com Sucesso</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertTriangle className="w-4 h-4 text-brand-red animate-pulse" />
+                              <span className="text-brand-red">Erro Estrutural de Sintaxe Detectado</span>
+                            </>
+                          )}
+                        </div>
+                        
+                        <p className="text-xs font-bold leading-relaxed">
+                          {queryValidationFeedback.type === 'success' 
+                            ? 'A consulta SQL foi executada no ERP com êxito e retornou estrutura compatível.' 
+                            : 'A instrução SQL falhou ao ser compilada ou enviada ao servidor remoto. Verifique se o nome das tabelas, colunas ou a cláusula WHERE estão de acordo com o banco.'}
+                        </p>
+
+                        {queryValidationFeedback.type === 'error' && (
+                          <div className="mt-1.5 p-3 rounded-lg bg-red-950 border border-slate-850 font-mono text-[11px] text-red-300 overflow-x-auto leading-normal whitespace-pre-wrap select-all">
+                            <span className="text-[10px] text-red-400 font-bold block mb-1 uppercase tracking-wider">&gt;_ RESPOSTA DO SERVIDOR (CONEXÃO/SINTAXE):</span>
+                            {queryValidationFeedback.message}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 text-[9px] text-slate-400 font-bold uppercase p-3 bg-slate-100 rounded-lg flex items-start gap-2">
                     <AlertTriangle className="w-3.5 h-3.5 text-brand-red flex-shrink-0" /> 
-                    <span>Atuando em tempo real sobre a base do ERP selecionada nas configurações.</span>
+                    <span>Atuando em tempo real sobre a base do ERP selecionada nas configurações. A query precisa ser validada com sucesso para salvar as modificações do card.</span>
                   </div>
                 </div>
 
@@ -1135,8 +1327,11 @@ export function Admin() {
                 <button onClick={() => setIsMetricModalOpen(false)} disabled={isSaving} className="w-full sm:w-auto px-6 sm:px-8 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl sm:rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-slate-100 transition-all disabled:opacity-50">Cancelar</button>
                 <button 
                   onClick={handleSaveMetric}
-                  disabled={isSaving}
-                  className="w-full sm:w-auto px-8 sm:px-10 py-3 bg-slate-900 text-white rounded-xl sm:rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-slate-800 transition-all shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={isSaving || !isQueryValid}
+                  title={!isQueryValid ? "Por favor, valide a Query SQL antes de salvar" : ""}
+                  className={`w-full sm:w-auto px-8 sm:px-10 py-3 rounded-xl sm:rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 transition-all shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    !isQueryValid ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800'
+                  }`}
                 >
                   <Save className={isSaving ? "w-4 h-4 animate-spin" : "w-4 h-4"} /> {isSaving ? 'Salvando...' : 'Salvar Card'}
                 </button>

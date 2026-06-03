@@ -31,7 +31,15 @@ export async function postSqlQuery<T = any[]>(query: string, id_score: string = 
     let errorMsg = `Erro: ${response.status}`;
     try {
       const errorData = JSON.parse(text);
-      errorMsg = errorData.error || errorMsg;
+      if (errorData && errorData.error) {
+        if (typeof errorData.error === 'object') {
+          errorMsg = errorData.error.message || errorData.error.code || JSON.stringify(errorData.error);
+        } else {
+          errorMsg = String(errorData.error);
+        }
+      } else if (errorData && errorData.message) {
+        errorMsg = String(errorData.message);
+      }
     } catch (e) {
       errorMsg = text || errorMsg;
     }
