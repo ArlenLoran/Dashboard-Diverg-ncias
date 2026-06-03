@@ -5,7 +5,7 @@ import {
   X, Info, Download, BookOpen, ShieldCheck, Search, Filter,
   TrendingUp, TrendingDown, Activity, Settings, LayoutGrid,
   Clock, Bell, Triangle, Sparkles, Fingerprint, Users, Shield, Lock,
-  Volume2
+  Volume2, HelpCircle, Mail, Copy, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -1066,12 +1066,131 @@ function DivergenceModal({ metric, onClose, onRefresh, enableAI = true }: { metr
   );
 }
 
+interface SupportModalProps {
+  onClose: () => void;
+  isWarRoom: boolean;
+}
+
+function SupportModal({ onClose, isWarRoom }: SupportModalProps) {
+  const [copiedEmail, setCopiedEmail] = useState<'arlen' | 'digitalization' | null>(null);
+
+  const handleCopy = (email: string, type: 'arlen' | 'digitalization') => {
+    navigator.clipboard.writeText(email);
+    setCopiedEmail(type);
+    setTimeout(() => setCopiedEmail(null), 2000);
+  };
+
+  const handleEmailClick = (email: string, recipientName: string) => {
+    const subject = `[Monitor Suporte] Contato / Dúvida`;
+    const body = `Olá ${recipientName},
+
+Gostaria de solicitar suporte referente ao Monitor do Dashboard.
+
+--
+Mensagem gerada via Central de Ajuda do Dashboard.`;
+
+    window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }} 
+      animate={{ opacity: 1 }} 
+      exit={{ opacity: 0 }} 
+      className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 15 }} 
+        animate={{ opacity: 1, scale: 1, y: 0 }} 
+        exit={{ opacity: 0, scale: 0.95, y: 15 }} 
+        className={`rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col border transition-all ${
+          isWarRoom ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-100 text-slate-900'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className={`px-6 py-4 border-b flex justify-between items-center ${isWarRoom ? 'border-slate-800 bg-slate-950/40' : 'border-slate-100 bg-slate-50/50'}`}>
+          <div className="flex items-center gap-3">
+            <div className="w-1.5 h-7 rounded-full bg-indigo-600" />
+            <div>
+              <h2 className="text-base font-black uppercase tracking-tight italic flex items-center gap-1.5 leading-none">
+                <HelpCircle className="w-5 h-5 text-indigo-600" /> Canais de Suporte
+              </h2>
+              <p className={`text-[10px] font-bold uppercase ${isWarRoom ? 'text-slate-400' : 'text-slate-500'}`}>Suporte & Canal DHL</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-1.5 rounded-full transition-colors ${isWarRoom ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+            <X className="w-5 h-5" />
+          </button>
+        </header>
+
+        <div className="p-6 space-y-5">
+          <p className={`text-xs leading-relaxed ${isWarRoom ? 'text-slate-400' : 'text-slate-500'}`}>
+            Caso encontre alguma divergência ou precise de suporte técnico nas operações do dashboard, entre em contato direto com os responsáveis abaixo:
+          </p>
+
+          <div className="space-y-4">
+            <div className={`p-4 rounded-xl border transition-all ${isWarRoom ? 'bg-slate-950/40 border-slate-800' : 'bg-slate-50 border-slate-200/50'}`}>
+              <div className="flex justify-between items-start">
+                <div className="cursor-pointer flex-1 mr-2" onClick={() => handleEmailClick('Arlen.Oliveira@dhl.com', 'Arlen Oliveira')}>
+                  <h3 className="text-xs font-black uppercase text-indigo-600 tracking-wider hover:underline flex items-center gap-1.5">
+                    Arlen Oliveira <Mail className="w-3.5 h-3.5" />
+                  </h3>
+                  <p className={`text-[10px] font-semibold mt-0.5 ${isWarRoom ? 'text-slate-400' : 'text-slate-500'}`}>Suporte Técnico & Operacional Specialist</p>
+                  <p className="text-xs font-mono font-bold text-indigo-500 mt-2 select-all">Arlen.Oliveira@dhl.com</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => handleCopy('Arlen.Oliveira@dhl.com', 'arlen')}
+                  className={`p-2 rounded-lg border transition-all ${
+                    isWarRoom ? 'border-slate-800 bg-slate-900/60 hover:bg-slate-800' : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                  title="Copiar e-mail"
+                >
+                  {copiedEmail === 'arlen' ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4 text-slate-400" />}
+                </button>
+              </div>
+            </div>
+
+            <div className={`p-4 rounded-xl border transition-all ${isWarRoom ? 'bg-slate-950/40 border-slate-800' : 'bg-slate-50 border-slate-200/50'}`}>
+              <div className="flex justify-between items-start">
+                <div className="cursor-pointer flex-1 mr-2" onClick={() => handleEmailClick('innovationteam.processassistant@dhl.com', 'Time de Digitalização')}>
+                  <h3 className="text-xs font-black uppercase text-indigo-600 tracking-wider hover:underline flex items-center gap-1.5">
+                    Time de Digitalização <Mail className="w-3.5 h-3.5" />
+                  </h3>
+                  <p className={`text-[10px] font-semibold mt-0.5 ${isWarRoom ? 'text-slate-400' : 'text-slate-500'}`}>DHL Process Assistant Intelligence Team</p>
+                  <p className="text-xs font-mono font-bold text-indigo-500 mt-2 select-all">innovationteam.processassistant@dhl.com</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => handleCopy('innovationteam.processassistant@dhl.com', 'digitalization')}
+                  className={`p-2 rounded-lg border transition-all ${
+                    isWarRoom ? 'border-slate-800 bg-slate-900/60 hover:bg-slate-800' : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                  title="Copiar e-mail"
+                >
+                  {copiedEmail === 'digitalization' ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4 text-slate-400" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className={`p-4 text-center rounded-xl border ${isWarRoom ? 'border-slate-800 bg-slate-950/20 text-slate-500' : 'border-slate-100 bg-slate-50/50 text-slate-400'} text-[10px] italic leading-relaxed`}>
+            Clique no nome do contato para abrir diretamente em seu Outlook ou copie o endereço usando os botões ao lado.
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 export function Dashboard() {
   const [data, setData] = useState<Section[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
   const [isWarRoom, setIsWarRoom] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'layout' | 'log' | 'prefs'>('layout');
   const [layoutConfig, setLayoutConfig] = useState<{title: string, width: number}[]>([]);
   const [eventLog, setEventLog] = useState<{ id: string, message: string, time: string, type: 'info' | 'critical' | 'success' }[]>([]);
@@ -2506,6 +2625,7 @@ export function Dashboard() {
       </div>
 
       <AnimatePresence>{selectedMetric && <DivergenceModal metric={selectedMetric} onClose={() => setSelectedMetric(null)} onRefresh={refreshSingleMetric} enableAI={preferences.enableAI && globalAiEnabled} />}</AnimatePresence>
+      <AnimatePresence>{isHelpOpen && <SupportModal onClose={() => setIsHelpOpen(false)} isWarRoom={isWarRoom} />}</AnimatePresence>
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {isSettingsOpen && (
@@ -2771,6 +2891,16 @@ export function Dashboard() {
       </AnimatePresence>,
       document.body
     )}
+
+      <button 
+        onClick={() => setIsHelpOpen(true)} 
+        className={`fixed bottom-[168px] right-8 z-50 h-14 w-14 hover:w-[220px] rounded-2xl shadow-2xl flex items-center p-4 transition-all duration-300 ease-in-out active:scale-95 group overflow-hidden ${isWarRoom ? 'bg-brand-red text-white hover:bg-red-600 shadow-[0_10px_30px_rgba(204,0,0,0.5)]' : 'bg-[#0005a3] text-white hover:bg-blue-900 shadow-[0_10px_30px_rgba(0,5,163,0.3)]'}`}
+      >
+        <HelpCircle className="w-6 h-6 flex-shrink-0" />
+        <span className="font-black text-xs uppercase tracking-widest border-l border-white/20 pl-3 ml-0 group-hover:ml-3 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none max-w-0 group-hover:max-w-xs overflow-hidden">
+          Suporte e Ajuda
+        </span>
+      </button>
 
       <button 
         onClick={() => setIsWarRoom(!isWarRoom)} 
