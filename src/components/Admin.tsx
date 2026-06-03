@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { 
   Plus, Edit2, Trash2, ChevronRight, Settings, Layout, 
   Activity, Shield, Clock, BookOpen, Database, Save, X,
-  AlertTriangle, Filter, ArrowLeft, Lock, GripVertical, ChevronUp, ChevronDown, Mail, HelpCircle
+  AlertTriangle, Filter, ArrowLeft, Lock, GripVertical, ChevronUp, ChevronDown, Mail, HelpCircle, Sparkles, History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Section, Metric } from '../types';
@@ -29,7 +29,11 @@ import {
   saveTeamsAlertsEnabled,
   fetchAlertEmails,
   addAlertEmail,
-  removeAlertEmail
+  removeAlertEmail,
+  getAiEnabled,
+  saveAiEnabled,
+  fetchAuditLogs,
+  AuditLogEntry
 } from '../services/configService';
 import { getCurrentSharePointUserEmail, hasSpContext } from '../services/spService';
 
@@ -38,6 +42,7 @@ export function Admin() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [editingSection, setEditingSection] = useState<Section | null>(null);
   const [editingMetric, setEditingMetric] = useState<{ metric: Metric, divisionId: string } | null>(null);
   const [isSectionModalOpen, setIsSectionModalOpen] = useState(false);
@@ -66,9 +71,30 @@ export function Admin() {
   const [isSavingTeamsChatId, setIsSavingTeamsChatId] = useState(false);
   const [teamsMessage, setTeamsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [teamsAlertsEnabled, setTeamsAlertsEnabled] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(false);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [testTeamsLink, setTestTeamsLink] = useState('');
   const [extractedIdResult, setExtractedIdResult] = useState('');
+
+  // Audit Log state
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [isLogsLoading, setIsLogsLoading] = useState(false);
+  const [searchLogQuery, setSearchLogQuery] = useState('');
+  const [selectedActionFilter, setSelectedActionFilter] = useState<'TODOS' | 'DIVISÕES' | 'CARDS' | 'ACESSOS' | 'CONFIGS' | 'ALERTAS'>('TODOS');
+
+  const fetchAndOpenAuditLog = async () => {
+    setIsAuditModalOpen(true);
+    setIsLogsLoading(true);
+    try {
+      const logs = await fetchAuditLogs();
+      setAuditLogs(logs);
+    } catch (err) {
+      console.error("Error loading audit logs:", err);
+    } finally {
+      setIsLogsLoading(false);
+    }
+  };
 
   const [draggedSectionIndex, setDraggedSectionIndex] = useState<number | null>(null);
   const [draggedMetricIndex, setDraggedMetricIndex] = useState<{ sectionId: string, index: number } | null>(null);
@@ -199,9 +225,26 @@ export function Admin() {
 
       const teamsEnabled = await getTeamsAlertsEnabled();
       setTeamsAlertsEnabled(teamsEnabled);
+
+      const ai = await getAiEnabled();
+      setAiEnabled(ai);
     }
     setIsCheckingAccess(false);
     setIsLoading(false);
+  };
+
+  const handleToggleAi = async (val: boolean) => {
+    try {
+      const ok = await saveAiEnabled(val);
+      if (ok) {
+        setAiEnabled(val);
+      } else {
+        alert("Erro ao salvar configuração de inteligência artificial no SharePoint");
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message || "Erro ao salvar configuração de IA");
+    }
   };
 
   const handleToggleEmailAlerts = async (val: boolean) => {
@@ -326,11 +369,24 @@ export function Admin() {
     loadConfig();
   }, []);
 
+  useEffect(() => {
+    setModalError(null);
+  }, [isSectionModalOpen, isMetricModalOpen]);
+
   const handleSaveSection = async () => {
     if (!sectionTitle.trim()) return;
     setIsSaving(true);
     setStatusMessage(null);
+    setModalError(null);
     try {
+      const titleLower = sectionTitle.trim().toLowerCase();
+      const duplicate = sections.some(s => s.title.trim().toLowerCase() === titleLower && s.id !== editingSection?.id);
+      if (duplicate) {
+        setModalError(`Já existe uma divisão com o nome "${sectionTitle.trim()}". Escolha outro nome.`);
+        setIsSaving(false);
+        return;
+      }
+
       if (editingSection?.id) {
         await updateDivision(editingSection.id, sectionTitle, 1);
       } else {
@@ -343,7 +399,7 @@ export function Admin() {
       loadConfig();
     } catch (err: any) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: `Erro ao salvar divisão: ${err.message}` });
+      setModalError(`Erro ao salvar divisão: ${err.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -371,7 +427,20 @@ export function Admin() {
     if (!metricForm.title.trim() || !editingMetric?.divisionId) return;
     setIsSaving(true);
     setStatusMessage(null);
+    setModalError(null);
     try {
+      const targetDivId = editingMetric.divisionId;
+      const targetDiv = sections.find(s => s.id === targetDivId);
+      if (targetDiv) {
+        const titleLower = metricForm.title.trim().toLowerCase();
+        const duplicate = targetDiv.metrics.some(m => m.title.trim().toLowerCase() === titleLower && m.id !== editingMetric.metric.id);
+        if (duplicate) {
+          setModalError(`Já existe um card com o nome "${metricForm.title.trim()}" nesta divisão.`);
+          setIsSaving(false);
+          return;
+        }
+      }
+
       if (editingMetric.metric.id !== 'new') {
         await updateMetric(editingMetric.metric.id, metricForm);
       } else {
@@ -383,7 +452,7 @@ export function Admin() {
       loadConfig();
     } catch (err: any) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: `Erro ao salvar card: ${err.message}` });
+      setModalError(`Erro ao salvar card: ${err.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -480,6 +549,12 @@ export function Admin() {
             className="flex-grow sm:flex-grow-0 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all cursor-pointer"
           >
             <Shield className="w-4 h-4 text-brand-red animate-pulse" /> Gerenciar Acessos
+          </button>
+          <button 
+            onClick={fetchAndOpenAuditLog}
+            className="flex-grow sm:flex-grow-0 flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all cursor-pointer shadow-sm"
+          >
+            <History className="w-4 h-4 text-indigo-200" /> Trilha de Auditoria
           </button>
           <a href="/" className="flex-grow sm:flex-grow-0 flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all">
             <ArrowLeft className="w-4 h-4" /> Voltar ao Dashboard
@@ -620,6 +695,46 @@ export function Admin() {
           </div>
         </div>
 
+        {/* Painel de Configuração de Inteligência Artificial */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-4 sm:p-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 sm:p-3 bg-indigo-50 text-indigo-600 rounded-xl flex-shrink-0">
+                <Sparkles className="w-5 h-5 sm:w-6 sm:h-6" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black uppercase text-slate-900 tracking-tight flex items-center gap-2">
+                  Inteligência Artificial (Gemini)
+                  <span className="text-[9px] font-black uppercase bg-indigo-600 text-white px-2 py-0.5 rounded-full">Análise</span>
+                </h3>
+                <p className="text-[11px] sm:text-xs text-slate-500 mt-1">
+                  Ative ou desative o uso da IA no dashboard (recursos de causa raiz, insights e respostas automáticas com o Gemini).
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full md:w-auto">
+              {/* Status Toggle for AI */}
+              <div className="flex items-center justify-between sm:justify-end gap-3 sm:pl-4 overflow-visible">
+                <div className="flex flex-col">
+                  <span className="text-xs font-black uppercase text-slate-600 font-bold">Ativar IA no Dashboard</span>
+                  <span className="text-[10px] text-slate-400">Ativação global dos recursos de IA</span>
+                </div>
+                <button
+                  onClick={() => handleToggleAi(!aiEnabled)}
+                  className={`relative inline-flex h-6 w-12 items-center rounded-full transition-colors duration-300 ${
+                    aiEnabled ? 'bg-[#1f4e79]' : 'bg-slate-200'
+                  }`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-300 ${
+                    aiEnabled ? 'translate-x-[26px]' : 'translate-x-[4px]'
+                  }`} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h2 className="text-lg sm:text-xl font-black uppercase italic tracking-tight flex items-center gap-2">
             <Layout className="w-5 h-5 text-brand-red" /> Divisões do Dashboard
@@ -720,11 +835,20 @@ export function Admin() {
                       </button>
                       <button 
                         onClick={async () => {
-                          if (section.id && window.confirm(`Deseja realmente excluir a divisão "${section.title}"?`)) {
+                          if (section.metrics && section.metrics.length > 0) {
+                            setStatusMessage({ 
+                              type: 'error', 
+                              text: `Não é permitido excluir a divisão "${section.title}" pois ela contém ${section.metrics.length} card(s) cadastrado(s). Remova ou transfira todos os cards desta divisão antes de tentar excluí-la.` 
+                            });
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                            return;
+                          }
+
+                          if (section.id && window.confirm(`Deseja realmente excluir a divisão "${section.title}"? Tem certeza absoluta do que está fazendo?`)) {
                             try {
                               setIsSaving(true);
                               await deleteDivision(section.id);
-                              setStatusMessage({ type: 'success', text: 'Divisão excluída!' });
+                              setStatusMessage({ type: 'success', text: 'Divisão excluída com sucesso!' });
                               loadConfig();
                             } catch (err: any) {
                               setStatusMessage({ type: 'error', text: `Erro ao excluir: ${err.message}` });
@@ -824,11 +948,11 @@ export function Admin() {
                             </button>
                             <button 
                               onClick={async () => {
-                                if (window.confirm(`Deseja realmente excluir o card "${metric.title}"?`)) {
+                                if (window.confirm(`Deseja realmente excluir o card "${metric.title}"? Esta ação removerá a métrica e todo o seu histórico do painel permanentemente.`)) {
                                   try {
                                     setIsSaving(true);
                                     await deleteMetric(metric.id);
-                                    setStatusMessage({ type: 'success', text: 'Card excluído!' });
+                                    setStatusMessage({ type: 'success', text: 'Card excluído com sucesso!' });
                                     loadConfig();
                                   } catch (err: any) {
                                     setStatusMessage({ type: 'error', text: `Erro ao excluir: ${err.message}` });
@@ -875,6 +999,12 @@ export function Admin() {
                 <button onClick={() => setIsSectionModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><X className="w-5 h-5 sm:w-6 sm:h-6" /></button>
               </div>
               <div className="space-y-6">
+                {modalError && (
+                  <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-xs font-bold uppercase tracking-wide flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-500 animate-pulse" />
+                    <span className="leading-tight">{modalError}</span>
+                  </div>
+                )}
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Título da Divisão</label>
                   <input 
@@ -919,6 +1049,12 @@ export function Admin() {
               </header>
 
               <div className="flex-grow overflow-y-auto p-5 sm:p-8 space-y-6 sm:space-y-8">
+                {modalError && (
+                  <div className="p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-xs font-bold uppercase tracking-wide flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-500 animate-pulse" />
+                    <span className="leading-tight">{modalError}</span>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6">
                   <div className="space-y-5 sm:space-y-6">
                     <div>
@@ -1319,6 +1455,199 @@ export function Admin() {
                 >
                   OK, FECHAR
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {isAuditModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="bg-white rounded-2xl sm:rounded-3xl p-5 sm:p-8 w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden text-slate-900"
+            >
+              {/* Modal Header */}
+              <div className="flex justify-between items-center pb-4 border-b border-slate-100 flex-shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                    <History className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg sm:text-xl font-black uppercase italic tracking-tighter">Trilha de Auditoria (Audit Log)</h3>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Histórico de ações e alterações administrativas</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsAuditModalOpen(false)} 
+                  className="p-2 hover:bg-slate-100 rounded-full transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5 sm:w-6 sm:h-6" />
+                </button>
+              </div>
+
+              {/* Filters & Search */}
+              <div className="my-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between flex-shrink-0">
+                {/* Categorized Filter Pills */}
+                <div className="flex flex-wrap gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+                  {(['TODOS', 'DIVISÕES', 'CARDS', 'ACESSOS', 'CONFIGS', 'ALERTAS'] as const).map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => setSelectedActionFilter(filter)}
+                      className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                        selectedActionFilter === filter 
+                          ? 'bg-indigo-600 text-white shadow-sm' 
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {filter}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Instant Search input */}
+                <div className="relative w-full md:w-72">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                    <Filter className="w-3.5 h-3.5" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Filtrar por detalhe, email ou data..."
+                    value={searchLogQuery}
+                    onChange={(e) => setSearchLogQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs placeholder-slate-400 text-slate-700 outline-none focus:border-indigo-600 focus:bg-white transition-all font-medium"
+                  />
+                  {searchLogQuery && (
+                    <button 
+                      onClick={() => setSearchLogQuery('')} 
+                      className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Central Logs Container */}
+              <div className="flex-grow overflow-y-auto mb-4 border border-slate-200 rounded-xl bg-slate-50 relative min-h-[250px]">
+                {isLogsLoading ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/70 backdrop-blur-xs gap-3">
+                    <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Carregando trilha de auditoria...</span>
+                  </div>
+                ) : (() => {
+                  let filtered = auditLogs;
+                  if (selectedActionFilter === 'DIVISÕES') {
+                    filtered = filtered.filter(l => ['DIV_ADD', 'DIV_UPDATE', 'DIV_DELETE'].includes(l.ActionType));
+                  } else if (selectedActionFilter === 'CARDS') {
+                    filtered = filtered.filter(l => ['CARD_ADD', 'CARD_UPDATE', 'CARD_DELETE'].includes(l.ActionType));
+                  } else if (selectedActionFilter === 'ACESSOS') {
+                    filtered = filtered.filter(l => ['USER_ADD', 'USER_REMOVE'].includes(l.ActionType));
+                  } else if (selectedActionFilter === 'CONFIGS') {
+                    filtered = filtered.filter(l => ['CONFIG_CHANGE'].includes(l.ActionType));
+                  } else if (selectedActionFilter === 'ALERTAS') {
+                    filtered = filtered.filter(l => ['EMAIL_ADD', 'EMAIL_REMOVE'].includes(l.ActionType));
+                  }
+
+                  if (searchLogQuery.trim()) {
+                    const normQuery = searchLogQuery.toLowerCase();
+                    filtered = filtered.filter(l => 
+                      l.Title.toLowerCase().includes(normQuery) ||
+                      l.UserEmail.toLowerCase().includes(normQuery) ||
+                      l.ActionType.toLowerCase().includes(normQuery) ||
+                      (l.LogDate && new Date(l.LogDate).toLocaleString('pt-BR').includes(normQuery))
+                    );
+                  }
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+                        <History className="w-8 h-8 text-slate-300 mb-2" />
+                        <p className="text-slate-500 font-bold text-xs uppercase tracking-tight">Nenhuma ação de auditoria encontrada</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Tente realizar ações no painel admin para registrar novos logs.</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="divide-y divide-slate-100 bg-white">
+                      {filtered.map((log) => {
+                        let badgeStyle = 'bg-slate-100 text-slate-600 border-slate-200';
+                        if (log.ActionType.startsWith('DIV_')) badgeStyle = 'bg-cyan-50 text-cyan-700 border-cyan-100';
+                        else if (log.ActionType.startsWith('CARD_')) badgeStyle = 'bg-sky-50 text-sky-700 border-sky-100';
+                        else if (log.ActionType.startsWith('USER_')) badgeStyle = 'bg-purple-50 text-purple-700 border-purple-100';
+                        else if (log.ActionType.startsWith('EMAIL_')) badgeStyle = 'bg-rose-50 text-rose-700 border-rose-100';
+                        else if (log.ActionType === 'CONFIG_CHANGE') badgeStyle = 'bg-indigo-50 text-indigo-700 border-indigo-100';
+
+                        const formattedDate = log.LogDate 
+                          ? new Date(log.LogDate).toLocaleString('pt-BR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit'
+                            })
+                          : '';
+
+                        return (
+                          <div key={log.Id || Math.random()} className="p-3.5 hover:bg-slate-50/50 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs border-b border-slate-50">
+                            <div className="flex items-start gap-3 min-w-0 flex-grow">
+                              <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0 text-slate-600 font-black uppercase text-[10px]">
+                                {log.UserEmail ? log.UserEmail.substring(0, 2) : 'US'}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-800 tracking-tight leading-tight mb-1 flex items-center gap-2 flex-wrap">
+                                  {log.Title}
+                                  <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border leading-none ${badgeStyle}`}>
+                                    {log.ActionType}
+                                  </span>
+                                </p>
+                                <div className="flex items-center gap-2 text-[9px] text-slate-400 font-semibold uppercase tracking-wider flex-wrap leading-none">
+                                  <span className="text-slate-500 font-bold">{log.UserEmail}</span>
+                                  <span>•</span>
+                                  <span>{formattedDate}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex justify-between items-center pt-3 border-t border-slate-100 flex-shrink-0">
+                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+                  Total registrado: <span className="text-indigo-600">{auditLogs.length} logs</span>
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={async () => {
+                      setIsLogsLoading(true);
+                      try {
+                        const logs = await fetchAuditLogs();
+                        setAuditLogs(logs);
+                      } catch (err) {
+                        console.error(err);
+                      } finally {
+                        setIsLogsLoading(false);
+                      }
+                    }}
+                    className="px-3.5 py-2 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer shadow-sm"
+                  >
+                    Recarregar
+                  </button>
+                  <button
+                    onClick={() => setIsAuditModalOpen(false)}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer shadow-sm"
+                  >
+                    Fechar
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   CheckCircle2, XCircle, ChevronLeft, ChevronRight, RefreshCcw, 
-  X, Info, Download, BookOpen, ShieldCheck, Search,
+  X, Info, Download, BookOpen, ShieldCheck, Search, Filter,
   TrendingUp, TrendingDown, Activity, Settings, LayoutGrid,
   Clock, Bell, Triangle, Sparkles, Fingerprint, Users, Shield, Lock,
   Volume2
@@ -29,6 +29,7 @@ import {
   getTeamsChatId,
   getEmailAlertsEnabled,
   getTeamsAlertsEnabled,
+  getAiEnabled,
   fetchAlertEmails
 } from '../services/configService';
 import { getCurrentSharePointUserEmail, hasSpContext } from '../services/spService';
@@ -1075,7 +1076,7 @@ export function Dashboard() {
 
   // System preferences (AI, header visibility, KPI details and audio notifications)
   const [preferences, setPreferences] = useState({
-    enableAI: true,
+    enableAI: false,
     showHeader: true,
     showKpiDivergences: true,
     showKpiCritical: true,
@@ -1086,6 +1087,132 @@ export function Dashboard() {
 
   const [globalEmailAlertsEnabled, setGlobalEmailAlertsEnabled] = useState(false);
   const [globalTeamsAlertsEnabled, setGlobalTeamsAlertsEnabled] = useState(false);
+  const [globalAiEnabled, setGlobalAiEnabled] = useState(false);
+
+  // Helper to normalize strings for clean, readable URL parameters without accents or encoding issues
+  const normalizeUrlParam = (text: string): string => {
+    if (!text) return '';
+    return text
+      .toString()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-');
+  };
+
+  // States for operational filters with initial values parsed directly from URL parameters
+  const [selectedDivision, setSelectedDivision] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('divisao') || params.get('division') || 'TODAS';
+    }
+    return 'TODAS';
+  });
+
+  const [selectedSeverity, setSelectedSeverity] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const sevParam = (params.get('severidade') || params.get('severity') || params.get('status') || 'TODOS').toLowerCase();
+      if (['critical', 'critico', 'critica', 'error'].includes(sevParam)) return 'CRITICO';
+      if (['stable', 'estavel', 'ok'].includes(sevParam)) return 'ESTAVEL';
+    }
+    return 'TODOS';
+  });
+
+  const [dashboardSearch, setDashboardSearch] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('busca') || params.get('search') || '';
+    }
+    return '';
+  });
+
+  // Synchronize filter state back with Browser Address Bar URL parameters
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      
+      if (selectedDivision && selectedDivision !== 'TODAS') {
+        params.set('divisao', normalizeUrlParam(selectedDivision));
+      } else {
+        params.delete('divisao');
+      }
+      
+      if (selectedSeverity && selectedSeverity !== 'TODOS') {
+        params.set('severidade', selectedSeverity === 'CRITICO' ? 'critical' : 'stable');
+      } else {
+        params.delete('severidade');
+      }
+      
+      if (dashboardSearch.trim()) {
+        params.set('busca', dashboardSearch);
+      } else {
+        params.delete('busca');
+      }
+      
+      const newRelativePathQuery = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+      window.history.replaceState(null, '', newRelativePathQuery);
+    }
+  }, [selectedDivision, selectedSeverity, dashboardSearch]);
+
+  // Handle browser Back / Forward navigation events (popstate)
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const divParam = params.get('divisao') || params.get('division');
+      const sevParam = params.get('severidade') || params.get('severity') || params.get('status');
+      const searchParam = params.get('busca') || params.get('search');
+      
+      if (divParam) {
+        // Look up the actual case-sensitive/accented division name from data if loaded
+        const normalizedDivParam = normalizeUrlParam(divParam);
+        const matched = data.find(s => normalizeUrlParam(s.title) === normalizedDivParam);
+        setSelectedDivision(matched ? matched.title : divParam);
+      } else {
+        setSelectedDivision('TODAS');
+      }
+      
+      if (sevParam) {
+        const normSev = sevParam.toLowerCase();
+        if (['critical', 'critico', 'critica', 'error'].includes(normSev)) {
+          setSelectedSeverity('CRITICO');
+        } else if (['stable', 'estavel', 'ok'].includes(normSev)) {
+          setSelectedSeverity('ESTAVEL');
+        } else {
+          setSelectedSeverity('TODOS');
+        }
+      } else {
+        setSelectedSeverity('TODOS');
+      }
+      
+      setDashboardSearch(searchParam || '');
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [data]);
+
+  // Update matched selectedDivision case-sensitive name of Section when Data loaded
+  useEffect(() => {
+    if (typeof window !== 'undefined' && data.length > 0) {
+      const params = new URLSearchParams(window.location.search);
+      const divParam = params.get('divisao') || params.get('division');
+      if (divParam) {
+        const normalizedDivParam = normalizeUrlParam(divParam);
+        const found = data.find(s => normalizeUrlParam(s.title) === normalizedDivParam);
+        if (found) {
+          setSelectedDivision(found.title);
+        } else {
+          const foundPartial = data.find(s => s.title.toLowerCase().includes(divParam.toLowerCase()));
+          if (foundPartial) {
+            setSelectedDivision(foundPartial.title);
+          }
+        }
+      }
+    }
+  }, [data]);
 
   useEffect(() => {
     const saved = localStorage.getItem('dashboard_preferences_v2');
@@ -1501,44 +1628,113 @@ export function Dashboard() {
 
       const teamsChatId = await getTeamsChatId();
 
-      // 3. Gerar print de altíssima qualidade do painel usando html2canvas de forma direta e sem distorções
+      // 3. Gerar print de altíssima qualidade do painel usando html2canvas em um clone isolado para privacidade do usuário e foco operacional
       let base64Image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="; //Fallback de 1x1 png transparente
       const targetElement = document.getElementById('main-dashboard') || document.body;
       
       if (targetElement) {
-        const elementsToHideQuery = [
-          '#dashboard-header-print-ignore',
-          '#dashboard-kpi-block-print-ignore',
-          '#header-teams-config',
-          '.modal-excluir'
-        ];
-        
-        const hiddenElements: { element: HTMLElement; originalDisplay: string }[] = [];
-        const originalScrollY = window.scrollY;
-        const originalScrollX = window.scrollX;
-
+        let safeCloneResult: { clone: HTMLElement; cleanup: () => void } | null = null;
         try {
-          // Ocultar os elementos temporariamente no próprio DOM ativo para integridade absoluta dos estilos
-          elementsToHideQuery.forEach(query => {
-            document.querySelectorAll(query).forEach(el => {
-              const htmlEl = el as HTMLElement;
-              hiddenElements.push({
-                element: htmlEl,
-                originalDisplay: htmlEl.style.display
-              });
-              htmlEl.style.setProperty('display', 'none', 'important');
-            });
-          });
+          // Criar clone do Dashboard fora da tela (em left: -15000px) para total isolamento
+          safeCloneResult = createHtml2CanvasSafeClone(targetElement, isWarRoom);
+          const cloneWrapper = safeCloneResult.clone;
+          const clonedDashboard = cloneWrapper.querySelector('#main-dashboard') || cloneWrapper.firstChild as HTMLElement;
 
-          // Rolar temporariamente para o topo (0,0) de forma a evitar cortes no html2canvas causados por scroll
-          window.scrollTo(0, 0);
+          if (clonedDashboard) {
+            // Encontrar qual divisão (section) no data possui a métrica que está sendo reportada
+            const targetSec = data.find(s => 
+              s.metrics.some(m => m.title.trim().toLowerCase() === metricTitle.trim().toLowerCase())
+            );
+            
+            // Buscar todas as seções (division containers) dentro do clone
+            const clonedSecs = Array.from(clonedDashboard.querySelectorAll('section')) as HTMLElement[];
+            
+            if (targetSec) {
+              clonedSecs.forEach(clonedSec => {
+                const h2El = clonedSec.querySelector('h2');
+                const clonedSecTitle = h2El ? h2El.textContent?.trim().toLowerCase() : '';
+                const targetTitleLower = targetSec ? targetSec.title.trim().toLowerCase() : '';
+                
+                if (clonedSecTitle !== targetTitleLower) {
+                  // Remover divisões que não sejam a divisão alvo do alerta
+                  clonedSec.parentNode?.removeChild(clonedSec);
+                } else {
+                  // Na nossa divisão alvo, remover cards estáveis (status === 'ok') para destacar apenas os críticos
+                  const cardElements = Array.from(clonedSec.querySelectorAll('[id^="card-"]')) as HTMLElement[];
+                  cardElements.forEach(cardEl => {
+                    const cardId = cardEl.id;
+                    const metricId = cardId.replace('card-', '');
+                    const metricObj = targetSec?.metrics.find(m => String(m.id) === metricId);
+                    
+                    if (metricObj) {
+                      if (metricObj.status !== 'error') {
+                        cardEl.parentNode?.removeChild(cardEl);
+                      }
+                    } else {
+                      // Fallback por comparação de título caso ID mude
+                      const h3El = cardEl.querySelector('h3');
+                      const cardTitle = h3El ? h3El.textContent?.trim().toLowerCase() : '';
+                      const metricObjByTitle = targetSec?.metrics.find(m => m.title.trim().toLowerCase() === cardTitle);
+                      if (metricObjByTitle) {
+                        if (metricObjByTitle.status !== 'error') {
+                          cardEl.parentNode?.removeChild(cardEl);
+                        }
+                      } else {
+                        cardEl.parentNode?.removeChild(cardEl);
+                      }
+                    }
+                  });
+
+                  // Ocultar botões de navegação lateral ou de rolagem deste container clonado
+                  const scrollIndicator = clonedSec.querySelector('.flex.items-center.justify-between.mt-2.px-4.w-full');
+                  if (scrollIndicator) {
+                    scrollIndicator.parentNode?.removeChild(scrollIndicator);
+                  }
+                }
+              });
+            } else {
+              // Fallback: Se não encontrarmos a divisão pelo título, filtramos todas as divisões para mostrar apenas cards críticos
+              clonedSecs.forEach(clonedSec => {
+                const h2El = clonedSec.querySelector('h2');
+                const clonedSecTitle = h2El ? h2El.textContent?.trim().toLowerCase() : '';
+                const matchedSecData = data.find(s => s.title.trim().toLowerCase() === clonedSecTitle);
+
+                const cardElements = Array.from(clonedSec.querySelectorAll('[id^="card-"]')) as HTMLElement[];
+                let criticalCount = 0;
+                cardElements.forEach(cardEl => {
+                  const cardId = cardEl.id;
+                  const metricId = cardId.replace('card-', '');
+                  const metricObj = matchedSecData?.metrics.find(m => String(m.id) === metricId);
+                  
+                  if (metricObj && metricObj.status === 'error') {
+                    criticalCount++;
+                  } else {
+                    cardEl.parentNode?.removeChild(cardEl);
+                  }
+                });
+
+                if (criticalCount === 0) {
+                  clonedSec.parentNode?.removeChild(clonedSec);
+                } else {
+                  const scrollIndicator = clonedSec.querySelector('.flex.items-center.justify-between.mt-2.px-4.w-full');
+                  if (scrollIndicator) {
+                    scrollIndicator.parentNode?.removeChild(scrollIndicator);
+                  }
+                }
+              });
+            }
+            
+            // Remover painéis de controle, botões de filtros globais etc. no clone
+            const anyFilters = clonedDashboard.querySelectorAll('.mx-auto.w-full.p-4.rounded-2xl.border');
+            anyFilters.forEach(f => f.parentNode?.removeChild(f));
+          }
 
           const scaleStr = process.env.TEAMS_SCREENSHOT_SCALE;
-          // Subimos o padrão para 2.5 para qualidade Retina cristalina, ou 3.0 se configurado
           const captureScale = scaleStr ? parseFloat(scaleStr) : 2.5;
 
+          // Tirar o print do wrapper fora de tela (cloneWrapper) totalmente limpo e isolado
           const canvas = await withCleanedEnvironment(async () => {
-            return await html2canvas(targetElement, {
+            return await html2canvas(cloneWrapper, {
               useCORS: true,
               allowTaint: true,
               backgroundColor: isWarRoom ? '#050510' : '#f8fafc',
@@ -1555,19 +1751,12 @@ export function Dashboard() {
             base64Image = imgData.split('base64,')[1];
           }
         } catch (screenshotErr) {
-          console.error("[Teams] Erro ao obter print da tela via html2canvas:", screenshotErr);
+          console.error("[Teams] Erro ao obter print isolado da tela via html2canvas:", screenshotErr);
         } finally {
-          // Restaurar a posição de rolagem original imediatamente
-          window.scrollTo(originalScrollX, originalScrollY);
-
-          // Restaurar o estilo display original de todos os elementos ocultados
-          hiddenElements.forEach(({ element, originalDisplay }) => {
-            if (originalDisplay) {
-              element.style.setProperty('display', originalDisplay);
-            } else {
-              element.style.removeProperty('display');
-            }
-          });
+          // Destruir e limpar o clone do body imediatamente
+          if (safeCloneResult) {
+            safeCloneResult.cleanup();
+          }
         }
       }
 
@@ -1798,6 +1987,13 @@ export function Dashboard() {
       } catch (err) {
         console.error("Error loading TeamsAlertsEnabled in init:", err);
       }
+
+      try {
+        const aiE = await getAiEnabled();
+        setGlobalAiEnabled(aiE);
+      } catch (err) {
+        console.error("Error loading AiEnabled in init:", err);
+      }
     };
     initApp();
   }, []);
@@ -1831,6 +2027,13 @@ export function Dashboard() {
         setGlobalTeamsAlertsEnabled(teamsE);
       } catch (err) {
         console.error("Error loading TeamsAlertsEnabled in refresh:", err);
+      }
+
+      try {
+        const aiE = await getAiEnabled();
+        setGlobalAiEnabled(aiE);
+      } catch (err) {
+        console.error("Error loading AiEnabled in refresh:", err);
       }
 
       await fetchAllDataInternal(config);
@@ -1997,11 +2200,50 @@ export function Dashboard() {
   const trendValue = currentOkRate - prevOkRate;
   const handleWidthChange = (title: string, width: number) => { setLayoutConfig(prev => prev.map(c => c.title === title ? { ...c, width } : c)); };
 
-  const getPackedSections = () => {
-    if (!data || data.length === 0) return [];
+  const getFilteredData = () => {
+    let result = data;
     
-    // Map all sections in data to their config if it exists, or a default config
-    const sectionsWithConfig = data.map(section => {
+    // 1. Division filter (slug and case-insensitive checking to handle browser search perfectly)
+    if (selectedDivision !== 'TODAS') {
+      const normalizedSel = normalizeUrlParam(selectedDivision);
+      result = result.filter(s => 
+        s.title.toUpperCase() === selectedDivision.toUpperCase() || 
+        s.title.toLowerCase() === selectedDivision.toLowerCase() ||
+        normalizeUrlParam(s.title) === normalizedSel
+      );
+    }
+    
+    // 2. Metric status and search box filtering
+    return result.map(section => {
+      let filteredMetrics = section.metrics;
+      
+      if (selectedSeverity === 'CRITICO') {
+        filteredMetrics = filteredMetrics.filter(m => m.status === 'error');
+      } else if (selectedSeverity === 'ESTAVEL') {
+        filteredMetrics = filteredMetrics.filter(m => m.status === 'ok');
+      }
+      
+      if (dashboardSearch.trim()) {
+        const query = dashboardSearch.toLowerCase();
+        filteredMetrics = filteredMetrics.filter(m => 
+          m.title.toLowerCase().includes(query) ||
+          (m.objective && m.objective.toLowerCase().includes(query))
+        );
+      }
+      
+      return {
+        ...section,
+        metrics: filteredMetrics
+      };
+    }).filter(section => section.metrics.length > 0); // Hide empty sections matching the criteria
+  };
+
+  const getPackedSections = () => {
+    const filteredData = getFilteredData();
+    if (!filteredData || filteredData.length === 0) return [];
+    
+    // Map all sections in filteredData to their config if it exists, or a default config
+    const sectionsWithConfig = filteredData.map(section => {
       // Try to find config by title (we could use ID in the future if we ensured all sections had one)
       const config = layoutConfig.find(c => c.title === section.title) || { title: section.title, width: 33.33 };
       return { config, section };
@@ -2130,6 +2372,111 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* Filtros Operacionais */}
+      <div className={`mx-auto w-full p-4 rounded-2xl border transition-all duration-700 ${
+        isWarRoom 
+          ? 'bg-[#0f1125] border-indigo-900/40 shadow-[0_0_30px_rgba(0,0,0,0.55)] max-w-[1700px] text-white' 
+          : 'bg-white border-slate-200 shadow-sm max-w-[1400px] text-slate-900'
+      }`}>
+        <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between">
+          
+          {/* Busca por Texto */}
+          <div className="relative flex-grow max-w-md">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+              <Search className="w-4 h-4" />
+            </span>
+            <input
+              type="text"
+              placeholder="Buscar por métrica ou descrição..."
+              value={dashboardSearch}
+              onChange={(e) => setDashboardSearch(e.target.value)}
+              className={`w-full pl-10 pr-10 py-2.5 rounded-xl text-xs outline-none transition-all font-medium border ${
+                isWarRoom 
+                  ? 'bg-slate-950/40 border-slate-800 placeholder-slate-500 text-slate-100 focus:border-indigo-500 focus:bg-slate-950' 
+                  : 'bg-slate-50 border-slate-200 placeholder-slate-400 text-slate-700 focus:border-indigo-600 focus:bg-white focus:ring-2 focus:ring-indigo-100'
+              }`}
+            />
+            {dashboardSearch && (
+              <button 
+                onClick={() => setDashboardSearch('')} 
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Opções de Filtro */}
+          <div className="flex flex-wrap items-center gap-3.5">
+            
+            {/* Seletor de Divisão */}
+            <div className="flex items-center gap-2">
+              <span className={`text-[9px] font-black uppercase tracking-widest ${isWarRoom ? 'text-indigo-400' : 'text-slate-400'}`}>Divisão:</span>
+              <select
+                value={selectedDivision}
+                onChange={(e) => setSelectedDivision(e.target.value)}
+                className={`text-xs font-bold py-2 px-3 rounded-xl border outline-none tracking-tight cursor-pointer transition-all ${
+                  isWarRoom
+                    ? 'bg-[#181a3a] border-slate-800 text-slate-200 focus:border-indigo-500'
+                    : 'bg-slate-50 border-slate-200 text-slate-700 focus:border-indigo-600 focus:bg-white'
+                }`}
+              >
+                <option value="TODAS">TODAS AS DIVISÕES</option>
+                {data.map(div => (
+                  <option key={div.id || div.title} value={div.title}>{div.title.toUpperCase()}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Seletor de Severidade / Status */}
+            <div className="flex items-center gap-2">
+              <span className={`text-[9px] font-black uppercase tracking-widest ${isWarRoom ? 'text-indigo-400' : 'text-slate-400'}`}>Status:</span>
+              <div className={`flex p-0.5 rounded-lg border ${isWarRoom ? 'bg-slate-950/40 border-slate-800' : 'bg-slate-100 border-slate-200/50'}`}>
+                {(['TODOS', 'CRITICO', 'ESTAVEL'] as const).map((status) => {
+                  const label = status === 'TODOS' ? 'Todos' : status === 'CRITICO' ? 'Críticos' : 'Estáveis';
+                  const active = selectedSeverity === status;
+                  return (
+                    <button
+                      key={status}
+                      onClick={() => setSelectedSeverity(status)}
+                      className={`px-3 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                        active
+                          ? isWarRoom 
+                            ? 'bg-indigo-600 text-white shadow-sm' 
+                            : 'bg-slate-900 text-white shadow-sm'
+                          : `text-slate-400 hover:text-slate-200 ${isWarRoom ? 'hover:bg-slate-900/40' : 'hover:bg-slate-200/50 hover:text-slate-700'}`
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Limpar Filtros */}
+            {(selectedDivision !== 'TODAS' || selectedSeverity !== 'TODOS' || dashboardSearch) && (
+              <button
+                onClick={() => {
+                  setSelectedDivision('TODAS');
+                  setSelectedSeverity('TODOS');
+                  setDashboardSearch('');
+                }}
+                className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1.5 ${
+                  isWarRoom
+                    ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
+                    : 'bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-100'
+                }`}
+              >
+                <Filter className="w-3.5 h-3.5" /> Limpar
+              </button>
+            )}
+
+          </div>
+
+        </div>
+      </div>
+
       <div className={`flex flex-wrap gap-x-8 gap-y-12 px-2 transition-all duration-700 mx-auto justify-center ${isWarRoom ? 'max-w-[1700px]' : 'max-w-[1400px]'}`}>
         <AnimatePresence mode="popLayout">
           {getPackedSections().map(({ section, config }) => (
@@ -2140,7 +2487,7 @@ export function Dashboard() {
         </AnimatePresence>
       </div>
 
-      <AnimatePresence>{selectedMetric && <DivergenceModal metric={selectedMetric} onClose={() => setSelectedMetric(null)} onRefresh={refreshSingleMetric} enableAI={preferences.enableAI} />}</AnimatePresence>
+      <AnimatePresence>{selectedMetric && <DivergenceModal metric={selectedMetric} onClose={() => setSelectedMetric(null)} onRefresh={refreshSingleMetric} enableAI={preferences.enableAI && globalAiEnabled} />}</AnimatePresence>
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {isSettingsOpen && (
@@ -2211,17 +2558,31 @@ export function Dashboard() {
                     <div className={`p-4 rounded-xl border ${isWarRoom ? 'bg-slate-950/40 border-slate-800' : 'bg-slate-50 border-slate-100'} flex flex-col gap-3`}>
                       <div className="flex justify-between items-center">
                         <div>
-                          <p className="text-xs font-black uppercase tracking-tight">IA Analítica Gemini</p>
-                          <p className="text-[9px] text-slate-500">Geração de insights e sugestões</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-black uppercase tracking-tight">IA Analítica Gemini</p>
+                            {!globalAiEnabled && (
+                              <span className="text-[8px] font-black uppercase bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full leading-none">
+                                Inativo
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[9px] text-slate-500">
+                            {globalAiEnabled ? 'Geração de insights e sugestões' : 'Recurso desativado globalmente pelo administrador.'}
+                          </p>
                         </div>
                         <button
+                          disabled={!globalAiEnabled}
                           onClick={() => savePreferences({ ...preferences, enableAI: !preferences.enableAI })}
                           className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors duration-300 ${
-                            preferences.enableAI ? 'bg-brand-red' : isWarRoom ? 'bg-slate-800' : 'bg-slate-200'
+                            !globalAiEnabled 
+                              ? 'bg-slate-200/50 cursor-not-allowed opacity-50' 
+                              : preferences.enableAI ? 'bg-brand-red' : isWarRoom ? 'bg-slate-800' : 'bg-slate-200'
                           }`}
                         >
                           <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-300 ${
-                            preferences.enableAI ? 'translate-x-[22px]' : 'translate-x-1'
+                            !globalAiEnabled
+                              ? 'translate-x-1'
+                              : preferences.enableAI ? 'translate-x-[22px]' : 'translate-x-1'
                           }`} />
                         </button>
                       </div>

@@ -20,6 +20,7 @@ const LIST_RULES = "App_Dash_Regras";
 export const LIST_USERS = "App_Dash_Users";
 export const LIST_CONFIGS = "App_Dash_Configs";
 export const LIST_EMAILS = "App_Dash_Emails";
+export const LIST_AUDIT = "App_Dash_AuditLog";
 
 export async function ensureSharePointConfig() {
   if (!hasSpContext()) return;
@@ -82,6 +83,17 @@ export async function ensureSharePointConfig() {
     // Always ensure its columns
     await spListEnsureTextField(LIST_CONFIGS, "ConfigValue");
 
+    // 7. Ensure Audit Log List exists
+    if (!(await spListExists(LIST_AUDIT))) {
+      console.log(`Creating list ${LIST_AUDIT}...`);
+      await spCreateList(LIST_AUDIT);
+    }
+    // Always ensure its columns
+    await spListEnsureTextField(LIST_AUDIT, "UserEmail");
+    await spListEnsureTextField(LIST_AUDIT, "ActionType");
+    await spListEnsureTextField(LIST_AUDIT, "LogDate");
+    await spListEnsureMultiLineTextField(LIST_AUDIT, "Details");
+
     // Seed Configs if empty or TeamsChatId not present
     try {
       const configItems = await spListGetItems<any>(LIST_CONFIGS, { filter: "Title eq 'TeamsChatId'", top: 1 });
@@ -111,6 +123,16 @@ export async function ensureSharePointConfig() {
       }
     } catch (err) {
       console.error("Error seeding TeamsAlertsEnabled:", err);
+    }
+
+    try {
+      const aiEnabledConfig = await spListGetItems<any>(LIST_CONFIGS, { filter: "Title eq 'AiEnabled'", top: 1 });
+      if (aiEnabledConfig.status && aiEnabledConfig.data.length === 0) {
+        console.log("Seeding AiEnabled...");
+        await spListAddItem(LIST_CONFIGS, { Title: "AiEnabled", ConfigValue: "false" });
+      }
+    } catch (err) {
+      console.error("Error seeding AiEnabled:", err);
     }
 
     // Seed alert email list if empty
@@ -266,10 +288,14 @@ export async function addDivision(title: string, orderIndex: number) {
     const newDiv: Section = { id: newId, title, orderIndex, metrics: [] };
     sections.push(newDiv);
     localStorage.setItem('dash_config_mock', JSON.stringify(sections));
+    await tryLog("DIV_ADD", `Criou divisão: ${title}`);
     return { id: newId, Title: title, OrderIndex: orderIndex };
   }
   const res = await spListAddItem(LIST_DIVISOES, { Title: title, OrderIndex: orderIndex });
-  if (res.status) return res.data;
+  if (res.status) {
+    await tryLog("DIV_ADD", `Criou divisão: ${title}`);
+    return res.data;
+  }
   throw new Error(res.message);
 }
 
@@ -282,19 +308,23 @@ export async function updateDivision(id: string, title: string, orderIndex: numb
       section.orderIndex = orderIndex;
     }
     localStorage.setItem('dash_config_mock', JSON.stringify(sections));
+    await tryLog("DIV_UPDATE", `Atualizou divisão ID ${id} para: ${title}`);
     return { id, Title: title, OrderIndex: orderIndex };
   }
   const res = await spListUpdateItem(LIST_DIVISOES, Number(id), { Title: title, OrderIndex: orderIndex });
   if (!res.status) throw new Error(res.message);
+  await tryLog("DIV_UPDATE", `Atualizou divisão ID ${id} para: ${title}`);
 }
 
 export async function deleteDivision(id: string) {
   if (!hasSpContext()) {
     const sections = getLocalConfigFromStorage().filter(s => s.title !== id && s.id !== id);
     localStorage.setItem('dash_config_mock', JSON.stringify(sections));
+    await tryLog("DIV_DELETE", `Excluiu divisão ID ${id}`);
     return;
   }
   await spListDeleteItem(LIST_DIVISOES, Number(id));
+  await tryLog("DIV_DELETE", `Excluiu divisão ID ${id}`);
 }
 
 export async function deleteMetric(id: string) {
@@ -304,9 +334,11 @@ export async function deleteMetric(id: string) {
       s.metrics = s.metrics.filter(m => m.id !== id);
     });
     localStorage.setItem('dash_config_mock', JSON.stringify(sections));
+    await tryLog("CARD_DELETE", `Excluiu card ID ${id}`);
     return;
   }
   await spListDeleteItem(LIST_CARDS, Number(id));
+  await tryLog("CARD_DELETE", `Excluiu card ID ${id}`);
 }
 
 export async function addMetric(divisionId: string, metric: Partial<Metric>) {
@@ -316,19 +348,20 @@ export async function addMetric(divisionId: string, metric: Partial<Metric>) {
     if (section) {
       const now = new Date();
       const newMetric = { 
-        ...metric, 
-        id: Math.random().toString(),
-        value: 0,
-        status: 'ok' as const,
-        lastUpdate: now.toLocaleString('pt-BR'),
-        lastUpdateAt: now.toISOString(),
-        orderIndex: metric.orderIndex || (section.metrics.length + 1),
-        history: [],
-        details: []
+         ...metric, 
+         id: Math.random().toString(),
+         value: 0,
+         status: 'ok' as const,
+         lastUpdate: now.toLocaleString('pt-BR'),
+         lastUpdateAt: now.toISOString(),
+         orderIndex: metric.orderIndex || (section.metrics.length + 1),
+         history: [],
+         details: []
       } as Metric;
       section.metrics.push(newMetric);
       localStorage.setItem('dash_config_mock', JSON.stringify(sections));
     }
+    await tryLog("CARD_ADD", `Criou card: ${metric.title || ""}`);
     return { id: Math.random().toString(), ...metric };
   }
   const res = await spListAddItem(LIST_CARDS, {
@@ -352,6 +385,7 @@ export async function addMetric(divisionId: string, metric: Partial<Metric>) {
     }
   }
 
+  await tryLog("CARD_ADD", `Criou card: ${metric.title || ""}`);
   return res.data;
 }
 
@@ -365,6 +399,7 @@ export async function updateMetric(id: string, metric: Partial<Metric>) {
       }
     });
     localStorage.setItem('dash_config_mock', JSON.stringify(sections));
+    await tryLog("CARD_UPDATE", `Atualizou card ID ${id}: ${metric.title || ""}`);
     return;
   }
   const fields: any = {
@@ -398,6 +433,7 @@ export async function updateMetric(id: string, metric: Partial<Metric>) {
       console.error("Error syncing rules:", err);
     }
   }
+  await tryLog("CARD_UPDATE", `Atualizou card ID ${id}: ${metric.title || ""}`);
 }
 
 export async function fetchDashboardConfig(): Promise<Section[]> {
@@ -722,6 +758,7 @@ export async function addAllowedUser(email: string): Promise<boolean> {
     if (!list.some(e => e.toLowerCase().trim() === normalized)) {
       list.push(normalized);
       localStorage.setItem('dash_users_mock', JSON.stringify(list));
+      await tryLog("USER_ADD", `Adicionou acesso adm: ${normalized}`);
     }
     return true;
   }
@@ -733,6 +770,9 @@ export async function addAllowedUser(email: string): Promise<boolean> {
     Title: normalized,
     Email: normalized
   });
+  if (res.status) {
+    await tryLog("USER_ADD", `Adicionou acesso adm: ${normalized}`);
+  }
   return res.status;
 }
 
@@ -748,10 +788,14 @@ export async function removeAllowedUser(id: string, email?: string): Promise<boo
       }
     }
     localStorage.setItem('dash_users_mock', JSON.stringify(list));
+    await tryLog("USER_REMOVE", `Removeu acesso adm: ${email || id}`);
     return true;
   }
 
   const res = await spListDeleteItem(LIST_USERS, Number(id));
+  if (res.status) {
+    await tryLog("USER_REMOVE", `Removeu acesso adm: ${email || id}`);
+  }
   return res.status;
 }
 
@@ -781,6 +825,7 @@ export async function saveTeamsChatId(chatId: string): Promise<boolean> {
   const normalizedValue = String(chatId || '').trim();
   if (!hasSpContext()) {
     localStorage.setItem('teams_chat_id_mock', normalizedValue);
+    await tryLog("CONFIG_CHANGE", `Alterou ID do chat Teams para: ${normalizedValue}`);
     return true;
   }
   try {
@@ -788,14 +833,19 @@ export async function saveTeamsChatId(chatId: string): Promise<boolean> {
       filter: "Title eq 'TeamsChatId'",
       top: 1
     });
+    let ok = false;
     if (res.status && res.data.length > 0) {
       const id = res.data[0].Id;
       const upRes = await spListUpdateItem(LIST_CONFIGS, id, { ConfigValue: normalizedValue });
-      return upRes.status;
+      ok = upRes.status;
     } else {
       const adRes = await spListAddItem(LIST_CONFIGS, { Title: "TeamsChatId", ConfigValue: normalizedValue });
-      return adRes.status;
+      ok = adRes.status;
     }
+    if (ok) {
+      await tryLog("CONFIG_CHANGE", `Alterou ID do chat Teams para: ${normalizedValue}`);
+    }
+    return ok;
   } catch (err) {
     console.error("Error saving teams chat ID:", err);
     return false;
@@ -825,6 +875,7 @@ export async function saveEmailAlertsEnabled(enabled: boolean): Promise<boolean>
   const value = enabled ? 'true' : 'false';
   if (!hasSpContext()) {
     localStorage.setItem('email_alerts_enabled_mock', value);
+    await tryLog("CONFIG_CHANGE", enabled ? "Ativou Alertas de E-mail" : "Desativou Alertas de E-mail");
     return true;
   }
   try {
@@ -832,14 +883,19 @@ export async function saveEmailAlertsEnabled(enabled: boolean): Promise<boolean>
       filter: "Title eq 'EmailAlertsEnabled'",
       top: 1
     });
+    let ok = false;
     if (res.status && res.data.length > 0) {
       const id = res.data[0].Id;
       const upRes = await spListUpdateItem(LIST_CONFIGS, id, { ConfigValue: value });
-      return upRes.status;
+      ok = upRes.status;
     } else {
       const adRes = await spListAddItem(LIST_CONFIGS, { Title: "EmailAlertsEnabled", ConfigValue: value });
-      return adRes.status;
+      ok = adRes.status;
     }
+    if (ok) {
+      await tryLog("CONFIG_CHANGE", enabled ? "Ativou Alertas de E-mail" : "Desativou Alertas de E-mail");
+    }
+    return ok;
   } catch (err) {
     console.error("Error saving EmailAlertsEnabled:", err);
     return false;
@@ -869,6 +925,7 @@ export async function saveTeamsAlertsEnabled(enabled: boolean): Promise<boolean>
   const value = enabled ? 'true' : 'false';
   if (!hasSpContext()) {
     localStorage.setItem('teams_alerts_enabled_mock', value);
+    await tryLog("CONFIG_CHANGE", enabled ? "Ativou Alertas do Teams" : "Desativou Alertas do Teams");
     return true;
   }
   try {
@@ -876,14 +933,19 @@ export async function saveTeamsAlertsEnabled(enabled: boolean): Promise<boolean>
       filter: "Title eq 'TeamsAlertsEnabled'",
       top: 1
     });
+    let ok = false;
     if (res.status && res.data.length > 0) {
       const id = res.data[0].Id;
       const upRes = await spListUpdateItem(LIST_CONFIGS, id, { ConfigValue: value });
-      return upRes.status;
+      ok = upRes.status;
     } else {
       const adRes = await spListAddItem(LIST_CONFIGS, { Title: "TeamsAlertsEnabled", ConfigValue: value });
-      return adRes.status;
+      ok = adRes.status;
     }
+    if (ok) {
+      await tryLog("CONFIG_CHANGE", enabled ? "Ativou Alertas do Teams" : "Desativou Alertas do Teams");
+    }
+    return ok;
   } catch (err) {
     console.error("Error saving TeamsAlertsEnabled:", err);
     return false;
@@ -932,6 +994,7 @@ export async function addAlertEmail(email: string): Promise<boolean> {
     if (!list.some(e => e.toLowerCase().trim() === normalized)) {
       list.push(normalized);
       localStorage.setItem('dash_emails_mock', JSON.stringify(list));
+      await tryLog("EMAIL_ADD", `Adicionou e-mail de alerta: ${normalized}`);
     }
     return true;
   }
@@ -948,6 +1011,9 @@ export async function addAlertEmail(email: string): Promise<boolean> {
       Title: normalized,
       Email: normalized
     });
+    if (res.status) {
+      await tryLog("EMAIL_ADD", `Adicionou e-mail de alerta: ${normalized}`);
+    }
     return res.status;
   } catch (err) {
     console.error("Error adding alert email:", err);
@@ -967,14 +1033,154 @@ export async function removeAlertEmail(id: string, email?: string): Promise<bool
       }
     }
     localStorage.setItem('dash_emails_mock', JSON.stringify(list));
+    await tryLog("EMAIL_REMOVE", `Removeu e-mail de alerta: ${email || id}`);
     return true;
   }
 
   try {
     const res = await spListDeleteItem(LIST_EMAILS, Number(id));
+    if (res.status) {
+      await tryLog("EMAIL_REMOVE", `Removeu e-mail de alerta: ${email || id}`);
+    }
     return res.status;
   } catch (err) {
     console.error("Error removing alert email:", err);
     return false;
+  }
+}
+
+export async function getAiEnabled(): Promise<boolean> {
+  if (!hasSpContext()) {
+    return localStorage.getItem('ai_enabled_mock') === 'true';
+  }
+  try {
+    const res = await spListGetItems<any>(LIST_CONFIGS, {
+      filter: "Title eq 'AiEnabled'",
+      top: 1
+    });
+    if (res.status && res.data.length > 0) {
+      return res.data[0].ConfigValue === 'true';
+    }
+    await spListAddItem(LIST_CONFIGS, { Title: "AiEnabled", ConfigValue: "false" });
+    return false;
+  } catch (err) {
+    console.error("Error fetching AiEnabled config:", err);
+    return false;
+  }
+}
+
+export async function saveAiEnabled(enabled: boolean): Promise<boolean> {
+  const value = enabled ? 'true' : 'false';
+  if (!hasSpContext()) {
+    localStorage.setItem('ai_enabled_mock', value);
+    await tryLog("CONFIG_CHANGE", enabled ? "Ativou Inteligência Artificial" : "Desativou Inteligência Artificial");
+    return true;
+  }
+  try {
+    const res = await spListGetItems<any>(LIST_CONFIGS, {
+      filter: "Title eq 'AiEnabled'",
+      top: 1
+    });
+    let ok = false;
+    if (res.status && res.data.length > 0) {
+      const id = res.data[0].Id;
+      const upRes = await spListUpdateItem(LIST_CONFIGS, id, { ConfigValue: value });
+      ok = upRes.status;
+    } else {
+      const adRes = await spListAddItem(LIST_CONFIGS, { Title: "AiEnabled", ConfigValue: value });
+      ok = adRes.status;
+    }
+    if (ok) {
+      await tryLog("CONFIG_CHANGE", enabled ? "Ativou Inteligência Artificial" : "Desativou Inteligência Artificial");
+    }
+    return ok;
+  } catch (err) {
+    console.error("Error saving AiEnabled config:", err);
+    return false;
+  }
+}
+
+// Audit Log Structures
+export interface AuditLogEntry {
+  Id?: number;
+  ID?: number;
+  Title: string;
+  UserEmail: string;
+  ActionType: string;
+  LogDate: string;
+  Details?: string;
+}
+
+async function tryLog(actionType: string, title: string, details?: string) {
+  try {
+    await addAuditLog(actionType, title, details);
+  } catch (err) {
+    console.warn("Audit logging failed:", err);
+  }
+}
+
+export async function addAuditLog(actionType: string, title: string, details?: string): Promise<boolean> {
+  const userEmail = getCurrentSharePointUserEmail() || 'usuario.local@admin.com';
+  const logDate = new Date().toISOString();
+  
+  if (!hasSpContext()) {
+    const logs = getLocalAuditLogs();
+    const newLog: AuditLogEntry = {
+      Id: logs.length + 1,
+      Title: title,
+      UserEmail: userEmail,
+      ActionType: actionType,
+      LogDate: logDate,
+      Details: details || ""
+    };
+    logs.unshift(newLog);
+    localStorage.setItem('dash_audit_logs_mock', JSON.stringify(logs));
+    return true;
+  }
+  
+  try {
+    const res = await spListAddItem(LIST_AUDIT, {
+      Title: title,
+      UserEmail: userEmail,
+      ActionType: actionType,
+      LogDate: logDate,
+      Details: details || ""
+    });
+    return res.status;
+  } catch (err) {
+    console.error("Error adding audit log:", err);
+    return false;
+  }
+}
+
+export async function fetchAuditLogs(): Promise<AuditLogEntry[]> {
+  if (!hasSpContext()) {
+    return getLocalAuditLogs();
+  }
+  try {
+    const res = await spListGetItems<any>(LIST_AUDIT);
+    if (!res.status) throw new Error(res.message);
+    const mapped = res.data.map((item: any) => ({
+      Id: item.Id || item.ID,
+      Title: item.Title,
+      UserEmail: item.UserEmail,
+      ActionType: item.ActionType,
+      LogDate: item.LogDate || item.Created,
+      Details: item.Details || ""
+    }));
+    return mapped.sort((a: any, b: any) => new Date(b.LogDate).getTime() - new Date(a.LogDate).getTime());
+  } catch (err) {
+    console.error("Error fetching audit logs:", err);
+    return [];
+  }
+}
+
+function getLocalAuditLogs(): AuditLogEntry[] {
+  const raw = localStorage.getItem('dash_audit_logs_mock');
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
   }
 }
