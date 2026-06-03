@@ -203,6 +203,26 @@ export function Admin() {
     }
   };
 
+  // Retorna a URL relativa ao dashboard index.aspx no mesmo diretório SharePoint
+  const getDashboardUrl = () => {
+    const loc = window.location;
+    const path = loc.pathname;
+    
+    // Se for desenvolvimento local ou barra '/', apenas retorna '/'
+    if (path === '/' || path === '') {
+      return '/';
+    }
+
+    // Remove o último segmento (ex: 'admin.aspx') e coloca 'index.aspx'
+    const lastSlashIndex = path.lastIndexOf('/');
+    if (lastSlashIndex !== -1) {
+      const parentPath = path.substring(0, lastSlashIndex);
+      return `${parentPath}/index.aspx${loc.search}`;
+    }
+    
+    return `index.aspx${loc.search}`;
+  };
+
   // Form states
   const [sectionTitle, setSectionTitle] = useState('');
   const [metricForm, setMetricForm] = useState({
@@ -595,7 +615,7 @@ export function Admin() {
           </p>
 
           <div className="flex flex-col gap-3">
-            <a href="/" className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-slate-800 transition-all active:scale-95 shadow-md">
+            <a href={getDashboardUrl()} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-slate-800 transition-all active:scale-95 shadow-md">
               <ArrowLeft className="w-4 h-4" /> Voltar ao Dashboard
             </a>
             
@@ -644,7 +664,7 @@ export function Admin() {
           >
             <History className="w-4 h-4 text-indigo-200" /> Trilha de Auditoria
           </button>
-          <a href="/" className="flex-grow sm:flex-grow-0 flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all">
+          <a href={getDashboardUrl()} className="flex-grow sm:flex-grow-0 flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all">
             <ArrowLeft className="w-4 h-4" /> Voltar ao Dashboard
           </a>
         </div>
