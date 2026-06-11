@@ -5,7 +5,7 @@ import {
   X, Info, Download, BookOpen, ShieldCheck, Search, Filter,
   TrendingUp, TrendingDown, Activity, Settings, LayoutGrid,
   Clock, Bell, Triangle, Sparkles, Fingerprint, Users, Shield, Lock,
-  Volume2, HelpCircle, Mail, Copy, Check
+  Volume2, HelpCircle, Mail, Copy, Check, ChevronDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -1224,13 +1224,51 @@ export function Dashboard() {
   };
 
   // States for operational filters with initial values parsed directly from URL parameters
-  const [selectedDivision, setSelectedDivision] = useState<string>(() => {
+  const [selectedDivisions, setSelectedDivisions] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
+      // 1. Prioritize cache local storage
+      const saved = localStorage.getItem('dashboard_selected_divisions_v2');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        } catch (e) {
+          console.error("Error parsing saved selected divisions:", e);
+        }
+      }
+
+      // 2. Fall back to URL query params
       const params = new URLSearchParams(window.location.search);
-      return params.get('divisao') || params.get('division') || 'TODAS';
+      const divParam = params.get('divisao') || params.get('division');
+      if (divParam) {
+        if (divParam === 'TODAS') return ['TODAS'];
+        return divParam.split(',').map(d => d.trim());
+      }
     }
-    return 'TODAS';
+    return ['TODAS'];
   });
+
+  const [isDivOpen, setIsDivOpen] = useState(false);
+  const divDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (divDropdownRef.current && !divDropdownRef.current.contains(e.target as Node)) {
+        setIsDivOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Save selected divisions to local cache on change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('dashboard_selected_divisions_v2', JSON.stringify(selectedDivisions));
+    }
+  }, [selectedDivisions]);
 
   const [selectedSeverity, setSelectedSeverity] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -1255,8 +1293,8 @@ export function Dashboard() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       
-      if (selectedDivision && selectedDivision !== 'TODAS') {
-        params.set('divisao', normalizeUrlParam(selectedDivision));
+      if (selectedDivisions && selectedDivisions.length > 0 && !selectedDivisions.includes('TODAS')) {
+        params.set('divisao', selectedDivisions.map(d => normalizeUrlParam(d)).join(','));
       } else {
         params.delete('divisao');
       }
@@ -1276,7 +1314,7 @@ export function Dashboard() {
       const newRelativePathQuery = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
       window.history.replaceState(null, '', newRelativePathQuery);
     }
-  }, [selectedDivision, selectedSeverity, dashboardSearch]);
+  }, [selectedDivisions, selectedSeverity, dashboardSearch]);
 
   // Handle browser Back / Forward navigation events (popstate)
   useEffect(() => {
@@ -1287,12 +1325,19 @@ export function Dashboard() {
       const searchParam = params.get('busca') || params.get('search');
       
       if (divParam) {
-        // Look up the actual case-sensitive/accented division name from data if loaded
-        const normalizedDivParam = normalizeUrlParam(divParam);
-        const matched = data.find(s => normalizeUrlParam(s.title) === normalizedDivParam);
-        setSelectedDivision(matched ? matched.title : divParam);
+        if (divParam === 'TODAS') {
+          setSelectedDivisions(['TODAS']);
+        } else {
+          const splitParam = divParam.split(',');
+          const resolvedDivisions = splitParam.map(item => {
+            const normalized = normalizeUrlParam(item);
+            const matched = data.find(s => normalizeUrlParam(s.title) === normalized);
+            return matched ? matched.title : item;
+          });
+          setSelectedDivisions(resolvedDivisions);
+        }
       } else {
-        setSelectedDivision('TODAS');
+        setSelectedDivisions(['TODAS']);
       }
       
       if (sevParam) {
@@ -1315,21 +1360,25 @@ export function Dashboard() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [data]);
 
-  // Update matched selectedDivision case-sensitive name of Section when Data loaded
+  // Update matched selectedDivisions case-sensitive names of Section when Data loaded
   useEffect(() => {
     if (typeof window !== 'undefined' && data.length > 0) {
       const params = new URLSearchParams(window.location.search);
       const divParam = params.get('divisao') || params.get('division');
       if (divParam) {
-        const normalizedDivParam = normalizeUrlParam(divParam);
-        const found = data.find(s => normalizeUrlParam(s.title) === normalizedDivParam);
-        if (found) {
-          setSelectedDivision(found.title);
+        if (divParam === 'TODAS') {
+          setSelectedDivisions(['TODAS']);
         } else {
-          const foundPartial = data.find(s => s.title.toLowerCase().includes(divParam.toLowerCase()));
-          if (foundPartial) {
-            setSelectedDivision(foundPartial.title);
-          }
+          const splitParam = divParam.split(',');
+          const resolved = splitParam.map(item => {
+            const normalized = normalizeUrlParam(item);
+            const found = data.find(s => normalizeUrlParam(s.title) === normalized);
+            if (found) return found.title;
+            const foundPartial = data.find(s => s.title.toLowerCase().includes(item.toLowerCase()));
+            if (foundPartial) return foundPartial.title;
+            return item;
+          });
+          setSelectedDivisions(resolved);
         }
       }
     }
@@ -2528,14 +2577,18 @@ export function Dashboard() {
   const getFilteredData = () => {
     let result = data;
     
-    // 1. Division filter (slug and case-insensitive checking to handle browser search perfectly)
-    if (selectedDivision !== 'TODAS') {
-      const normalizedSel = normalizeUrlParam(selectedDivision);
-      result = result.filter(s => 
-        s.title.toUpperCase() === selectedDivision.toUpperCase() || 
-        s.title.toLowerCase() === selectedDivision.toLowerCase() ||
-        normalizeUrlParam(s.title) === normalizedSel
-      );
+    // 1. Division filter (supports multiple selected divisions)
+    if (selectedDivisions && selectedDivisions.length > 0 && !selectedDivisions.includes('TODAS')) {
+      result = result.filter(s => {
+        return selectedDivisions.some(sel => {
+          const normalizedSel = normalizeUrlParam(sel);
+          return (
+            s.title.toUpperCase() === sel.toUpperCase() || 
+            s.title.toLowerCase() === sel.toLowerCase() ||
+            normalizeUrlParam(s.title) === normalizedSel
+          );
+        });
+      });
     }
     
     // 2. Metric status and search box filtering
@@ -2734,23 +2787,108 @@ export function Dashboard() {
           {/* Opções de Filtro */}
           <div className="flex flex-wrap items-center gap-3.5">
             
-            {/* Seletor de Divisão */}
-            <div className="flex items-center gap-2">
+            {/* Seletor de Divisão Multi-Select */}
+            <div className="flex items-center gap-2 relative" ref={divDropdownRef}>
               <span className={`text-[9px] font-black uppercase tracking-widest ${isWarRoom ? 'text-indigo-400' : 'text-slate-400'}`}>Divisão:</span>
-              <select
-                value={selectedDivision}
-                onChange={(e) => setSelectedDivision(e.target.value)}
-                className={`text-xs font-bold py-2 px-3 rounded-xl border outline-none tracking-tight cursor-pointer transition-all ${
+              
+              <button
+                type="button"
+                onClick={() => setIsDivOpen(!isDivOpen)}
+                className={`text-xs font-bold py-2 px-3 rounded-xl border outline-none tracking-tight cursor-pointer transition-all flex items-center justify-between gap-1.5 min-w-[150px] max-w-[240px] text-left truncate ${
                   isWarRoom
-                    ? 'bg-[#181a3a] border-slate-800 text-slate-200 focus:border-indigo-500'
-                    : 'bg-slate-50 border-slate-200 text-slate-700 focus:border-indigo-600 focus:bg-white'
+                    ? 'bg-[#181a3a] border-slate-800 text-slate-200 hover:border-indigo-500'
+                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-600 focus:bg-white'
                 }`}
               >
-                <option value="TODAS">TODAS AS DIVISÕES</option>
-                {data.map(div => (
-                  <option key={div.id || div.title} value={div.title}>{div.title.toUpperCase()}</option>
-                ))}
-              </select>
+                <span className="truncate">
+                  {selectedDivisions.includes('TODAS')
+                    ? 'TODAS AS DIVISÕES'
+                    : selectedDivisions.length === 1
+                      ? selectedDivisions[0].toUpperCase()
+                      : `${selectedDivisions.length} SELECIONADAS`}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 flex-shrink-0 opacity-60" />
+              </button>
+
+              <AnimatePresence>
+                {isDivOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    transition={{ duration: 0.15 }}
+                    className={`absolute right-0 top-full mt-1.5 w-60 rounded-xl shadow-lg border p-2 z-[9999] max-h-72 overflow-y-auto ${
+                      isWarRoom
+                        ? 'bg-[#12142d] border-indigo-900/60 text-slate-200 shadow-slate-950/80'
+                        : 'bg-white border-slate-200 text-slate-700 shadow-slate-200/55'
+                    }`}
+                  >
+                    {/* Option TODAS */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDivisions(['TODAS']);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-black transition-colors ${
+                        selectedDivisions.includes('TODAS')
+                          ? isWarRoom
+                            ? 'bg-indigo-600/30 text-indigo-400'
+                            : 'bg-[#1f2937]/10 text-indigo-600'
+                          : isWarRoom
+                            ? 'hover:bg-slate-800/40 text-slate-300'
+                            : 'hover:bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      <span>TODAS AS DIVISÕES</span>
+                      {selectedDivisions.includes('TODAS') && (
+                        <Check className="w-3.5 h-3.5 text-indigo-500" />
+                      )}
+                    </button>
+
+                    <div className="my-1 border-t border-slate-800/20 dark:border-slate-100/10" />
+
+                    {/* Options list */}
+                    {data.map(div => {
+                      const isSelected = selectedDivisions.includes(div.title);
+                      return (
+                        <button
+                          key={div.id || div.title}
+                          type="button"
+                          onClick={() => {
+                            if (selectedDivisions.includes('TODAS')) {
+                              // If 'TODAS' is selected, switch exclusively to this division
+                              setSelectedDivisions([div.title]);
+                            } else {
+                              if (isSelected) {
+                                // Toggle off
+                                const next = selectedDivisions.filter(d => d !== div.title);
+                                setSelectedDivisions(next.length === 0 ? ['TODAS'] : next);
+                              } else {
+                                // Toggle on
+                                setSelectedDivisions([...selectedDivisions, div.title]);
+                              }
+                            }
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left ${
+                            isSelected && !selectedDivisions.includes('TODAS')
+                              ? isWarRoom
+                                ? 'bg-indigo-600/20 text-indigo-400'
+                                : 'bg-indigo-50 text-indigo-600 font-semibold'
+                              : isWarRoom
+                                ? 'hover:bg-slate-800/40 text-slate-300'
+                                : 'hover:bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          <span className="truncate">{div.title.toUpperCase()}</span>
+                          {isSelected && !selectedDivisions.includes('TODAS') && (
+                            <Check className="w-3.5 h-3.5 text-indigo-500" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Seletor de Severidade / Status */}
@@ -2780,10 +2918,10 @@ export function Dashboard() {
             </div>
 
             {/* Limpar Filtros */}
-            {(selectedDivision !== 'TODAS' || selectedSeverity !== 'TODOS' || dashboardSearch) && (
+            {(!selectedDivisions.includes('TODAS') || selectedSeverity !== 'TODOS' || dashboardSearch) && (
               <button
                 onClick={() => {
-                  setSelectedDivision('TODAS');
+                  setSelectedDivisions(['TODAS']);
                   setSelectedSeverity('TODOS');
                   setDashboardSearch('');
                 }}
