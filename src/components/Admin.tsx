@@ -1182,15 +1182,26 @@ export function Admin() {
                     </div>
                     <div>
                       <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">
-                        <Clock className="w-3 h-3" /> Intervalo de Atualização (Minutos)
+                        <Clock className="w-3 h-3" /> Intervalo de Atualização
                         <span className="text-[8px] text-brand-red font-black tracking-widest bg-red-50 border border-red-200 px-1.5 py-0.5 rounded ml-auto leading-none">Obrigatório</span>
                       </label>
-                      <input 
-                        type="number" 
+                      <select 
                         value={metricForm.refreshInterval}
                         onChange={(e) => setMetricForm({...metricForm, refreshInterval: parseInt(e.target.value)})}
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 transition-all font-bold text-sm"
-                      />
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-slate-900 transition-all font-bold text-sm cursor-pointer"
+                      >
+                        <option value={5}>5 Minutos</option>
+                        <option value={10}>10 Minutos</option>
+                        <option value={15}>15 Minutos</option>
+                        <option value={30}>30 Minutos</option>
+                        <option value={60}>1 Hora</option>
+                        <option value={360}>6 Horas</option>
+                        <option value={720}>12 Horas</option>
+                        <option value={1440}>24 Horas</option>
+                        {![5, 10, 15, 30, 60, 360, 720, 1440].includes(metricForm.refreshInterval) && (
+                          <option value={metricForm.refreshInterval}>{metricForm.refreshInterval} Minutos</option>
+                        )}
+                      </select>
                     </div>
                   </div>
 
