@@ -36,6 +36,46 @@ import { getCurrentSharePointUserEmail, hasSpContext } from '../services/spServi
 
 const sendingEmailLocks = new Set<string>();
 
+interface PendingSave {
+  metricId: string;
+  dateIso: string;
+  data: any;
+  history: number[];
+}
+
+const saveQueue: PendingSave[] = [];
+let isProcessingQueue = false;
+
+async function processSaveQueue() {
+  if (isProcessingQueue || saveQueue.length === 0) return;
+  isProcessingQueue = true;
+  
+  while (saveQueue.length > 0) {
+    const nextSave = saveQueue.shift();
+    if (nextSave) {
+      try {
+        await saveMetricData(nextSave.metricId, nextSave.dateIso, nextSave.data, nextSave.history);
+      } catch (err) {
+        console.error("Queue save error for metric:", nextSave.metricId, err);
+      }
+      // Spacing out updates to SharePoint/database sequentially by 1500ms to preserve performance and prevent lock conflict errors
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  }
+  
+  isProcessingQueue = false;
+}
+
+function queueMetricSave(metricId: string, dateIso: string, data: any, history: number[]) {
+  const existingIdx = saveQueue.findIndex(item => item.metricId === metricId);
+  if (existingIdx !== -1) {
+    saveQueue[existingIdx] = { metricId, dateIso, data, history };
+  } else {
+    saveQueue.push({ metricId, dateIso, data, history });
+  }
+  processSaveQueue();
+}
+
 function playAlertBeep(type: 'warning' | 'critical' | 'success' = 'warning') {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -675,11 +715,17 @@ function MiniSparkline({ data, color }: { data: MetricHistory[], color: string }
 }
 
 function MetricCard({ metric, onClick, onRefresh, isWarRoom }: MetricCardProps) {
+  const isSyncing = metric.lastUpdate === 'Sincronizando...';
+  
   return (
     <motion.div
       layout
       initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
+      animate={isSyncing ? { opacity: [0.85, 1, 0.85], scale: 1 } : { opacity: 1, scale: 1 }}
+      transition={{
+        opacity: isSyncing ? { repeat: Infinity, duration: 1.5, ease: "easeInOut" } : { duration: 0.25 },
+        layout: { type: 'spring', stiffness: 180, damping: 24 }
+      }}
       onClick={() => onClick?.(metric)}
       whileHover={{ 
         y: -4, 
@@ -693,6 +739,15 @@ function MetricCard({ metric, onClick, onRefresh, isWarRoom }: MetricCardProps) 
       }`}
       id={`card-${metric.id}`}
     >
+      {/* Visual Progress Shimmer Bar representing staggered query updates */}
+      {isSyncing && (
+        <motion.div 
+          className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-transparent via-brand-red to-transparent"
+          initial={{ x: '-100%' }}
+          animate={{ x: '100%' }}
+          transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+        />
+      )}
       <header className="w-full text-center">
         <h3 className={`text-[8px] font-bold uppercase tracking-wide truncate py-1 transition-colors duration-500 px-1 ${isWarRoom ? 'text-slate-300' : 'text-slate-700'}`}>
           {metric.title}
@@ -779,9 +834,11 @@ function SectionContainer({ section, onCardClick, onCardRefresh, isWarRoom }: { 
       </div>
       <div className="relative group flex flex-col w-full">
         <div ref={scrollRef} className="overflow-x-auto pb-4 scrollbar-hide flex gap-6 scroll-smooth px-4 w-full justify-start">
-          {section.metrics.map((metric) => (
-            <MetricCard key={metric.id} metric={metric} onClick={onCardClick} onRefresh={onCardRefresh} isWarRoom={isWarRoom} />
-          ))}
+          <AnimatePresence mode="popLayout">
+            {section.metrics.map((metric) => (
+              <MetricCard key={metric.id} metric={metric} onClick={onCardClick} onRefresh={onCardRefresh} isWarRoom={isWarRoom} />
+            ))}
+          </AnimatePresence>
         </div>
         <AnimatePresence>
           {isScrollable && (
@@ -1185,7 +1242,26 @@ Mensagem gerada via Central de Ajuda do Dashboard.`;
 }
 
 export function Dashboard() {
-  const [data, setData] = useState<Section[]>([]);
+  const [data, setData] = useState<Section[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('dashboard_cached_data');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {
+          console.error("Error reading dashboard cached data:", e);
+        }
+      }
+    }
+    return [];
+  });
+
+  // Keep local cache updated whenever data is successfully loaded or mutated
+  useEffect(() => {
+    if (typeof window !== 'undefined' && data && data.length > 0) {
+      localStorage.setItem('dashboard_cached_data', JSON.stringify(data));
+    }
+  }, [data]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
   const [isWarRoom, setIsWarRoom] = useState(false);
@@ -2261,11 +2337,8 @@ export function Dashboard() {
                 });
               });
 
-              // Save to SharePoint asynchronously. Stagger calls to prevent concurrent lock clashes!
-              setTimeout(() => {
-                saveMetricData(metric.id, resolveNowIso, result, updatedHistory)
-                  .catch(err => console.error(`Error saving background metric data for ${metric.id}:`, err));
-              }, index * 1000);
+              // Save to SharePoint via our optimized, rate-limited queue to prevent concurrent lock clashes
+              queueMetricSave(metric.id, resolveNowIso, result, updatedHistory);
 
               // Add success entry into administrative logs list
               setEventLog(prev => ([{
@@ -2456,11 +2529,8 @@ export function Dashboard() {
             });
           });
 
-          // Stagger card writes to SharePoint to keep background services fluent and conflict-free!
-          setTimeout(() => {
-            saveMetricData(metric.id, resolveNowIso, res, updatedHistory)
-              .catch(err => console.error(`Error saving metric data for ${metric.id}:`, err));
-          }, index * 1000);
+          // Save to SharePoint via our optimized, rate-limited queue to prevent concurrent lock clashes
+          queueMetricSave(metric.id, resolveNowIso, res, updatedHistory);
 
           // Specific state alert transition router
           if (isNowError && !wasError) {
@@ -2536,7 +2606,7 @@ export function Dashboard() {
           return section;
         });
       });
-      saveMetricData(metric.id, nowIso, result, updatedHistory);
+      queueMetricSave(metric.id, nowIso, result, updatedHistory);
       setEventLog(prev => ([{ id: Math.random().toString(36).substr(2, 9), message: `Card "${metric.title}" atualizado automaticamente.`, time: now.toLocaleTimeString('pt-BR'), type: 'success' as const }, ...prev] as any).slice(0, 50));
       
       // Trigger notifications if needed
