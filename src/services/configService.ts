@@ -25,6 +25,11 @@ export const LIST_AUDIT = "App_Dash_AuditLog";
 export async function ensureSharePointConfig() {
   if (!hasSpContext()) return;
   
+  if (typeof window !== 'undefined' && localStorage.getItem('sp_config_ensured_v5') === 'true') {
+    console.log("SharePoint configuration already verified in this session. Skipping redundant metadata checks.");
+    return;
+  }
+  
   try {
     console.log("Checking SharePoint Config...");
     
@@ -276,6 +281,9 @@ export async function ensureSharePointConfig() {
     }
 
     console.log("Config structure and seed data verified successfully.");
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('sp_config_ensured_v5', 'true');
+    }
   } catch (err) {
     console.error("Critical error ensuring SharePoint structure:", err);
   }

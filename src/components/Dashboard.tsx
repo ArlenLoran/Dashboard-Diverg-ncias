@@ -2083,7 +2083,41 @@ export function Dashboard() {
     const initApp = async () => {
       await ensureSharePointConfig();
       const config = await fetchDashboardConfig();
-      setData(config);
+
+      // Detect expired metrics on mount to display them instantly in a stable green state, then load background queries concurrently
+      const expiredList: string[] = [];
+      const expiredConfig = config.map(section => {
+        const updatedMetrics = section.metrics.map(metric => {
+          let isExpired = false;
+          if (!metric.lastUpdateAt) {
+            isExpired = true;
+          } else {
+            const last = new Date(metric.lastUpdateAt);
+            if (isNaN(last.getTime())) {
+              isExpired = true;
+            } else {
+              const expiryTime = last.getTime() + (metric.refreshInterval || 5) * 60000;
+              isExpired = Date.now() >= expiryTime;
+            }
+          }
+
+          if (isExpired && metric.sqlQuery) {
+            expiredList.push(metric.id);
+            // Return temporary clean, stable green state (no discrepancies) so card appears on screen immediately as green/0
+            return {
+              ...metric,
+              status: 'ok' as const,
+              value: 0,
+              lastUpdate: 'Sincronizando...',
+              lastUpdateAt: new Date().toISOString() // temporary to prevent standard Countdown from triggering individual immediate refreshes on mount
+            };
+          }
+          return metric;
+        });
+        return { ...section, metrics: updatedMetrics };
+      });
+
+      setData(expiredConfig);
 
       // Verify if current user is admin
       const email = getCurrentSharePointUserEmail() || localStorage.getItem('mock_user_email') || 'arlenloran@gmail.com';
@@ -2130,6 +2164,103 @@ export function Dashboard() {
         setGlobalAiEnabled(aiE);
       } catch (err) {
         console.error("Error loading AiEnabled in init:", err);
+      }
+
+      // Concurrently query only the expired cards in background, updating state progressively as they arrive!
+      if (expiredList.length > 0) {
+        console.log(`Starting background progressive updates for ${expiredList.length} expired metrics all at once...`);
+        
+        // Find them in original config to get proper initial state context
+        const expiredMetrics = config.flatMap(sec => 
+          sec.metrics.filter(m => expiredList.includes(m.id) && m.sqlQuery)
+        );
+
+        expiredMetrics.forEach((metric, index) => {
+          postSqlQuery(metric.sqlQuery!, metric.id)
+            .then(result => {
+              const resolveNow = new Date();
+              const resolveNowIso = resolveNow.toISOString();
+              const rowCount = Array.isArray(result) ? result.length : 0;
+              const isNowError = rowCount > 0;
+              const wasError = metric.status === 'error'; // original database state status
+
+              const updatedHistory = [rowCount, ...(metric.history || [])].slice(0, 10);
+
+              // Update metrics array in data state progressively as results arrive
+              setData(current => {
+                return current.map(section => {
+                  const mIdx = section.metrics.findIndex(m => m.id === metric.id);
+                  if (mIdx !== -1) {
+                    const currentMetric = section.metrics[mIdx];
+                    const updatedMetrics = [...section.metrics];
+                    updatedMetrics[mIdx] = {
+                      ...currentMetric,
+                      value: rowCount,
+                      details: Array.isArray(result) ? result : [],
+                      lastUpdate: resolveNow.toLocaleString('pt-BR'),
+                      lastUpdateAt: resolveNowIso, // next countdown timer set properly from execution timestamp
+                      status: isNowError ? 'error' : 'ok',
+                      history: updatedHistory
+                    };
+                    return { ...section, metrics: updatedMetrics };
+                  }
+                  return section;
+                });
+              });
+
+              // Save to SharePoint asynchronously. Stagger calls to prevent concurrent lock clashes!
+              setTimeout(() => {
+                saveMetricData(metric.id, resolveNowIso, result, updatedHistory)
+                  .catch(err => console.error(`Error saving background metric data for ${metric.id}:`, err));
+              }, index * 1000);
+
+              // Add success entry into administrative logs list
+              setEventLog(prev => ([{
+                id: Math.random().toString(36).substr(2, 9),
+                message: `Métrica "${metric.title}" sincronizada com sucesso.`,
+                time: resolveNow.toLocaleTimeString('pt-BR'),
+                type: 'success' as const
+              }, ...prev] as any).slice(0, 50));
+
+              // State transitions alert routing rules
+              if (isNowError && !wasError) {
+                triggerAlarm(`Alerta! Nova divergência detectada na métrica: ${metric.title}`, 'critical');
+                try {
+                  sendDivergenceEmail(metric.title, Array.isArray(result) ? result : []);
+                } catch (e1) {
+                  console.error("Error sending email:", e1);
+                }
+                try {
+                  sendTeamsNotification(metric.title, Array.isArray(result) ? result : []);
+                } catch (e2) {
+                  console.error("Error sending Teams notification:", e2);
+                }
+              } else if (!isNowError && wasError) {
+                triggerAlarm(`Excelente! Divergência resolvida na métrica: ${metric.title}`, 'success');
+              }
+            })
+            .catch(err => {
+              console.error(`Error refreshing expired card background query for ${metric.title}:`, err);
+              const resolveNow = new Date();
+              // In case query fails, mark as error synchronizing so user registers discrepancy
+              setData(current => {
+                return current.map(section => {
+                  const mIdx = section.metrics.findIndex(m => m.id === metric.id);
+                  if (mIdx !== -1) {
+                    const currentMetric = section.metrics[mIdx];
+                    const updatedMetrics = [...section.metrics];
+                    updatedMetrics[mIdx] = {
+                      ...currentMetric,
+                      lastUpdate: `Erro de sincronização (${resolveNow.toLocaleTimeString('pt-BR')})`,
+                      lastUpdateAt: resolveNow.toISOString() // reset timer trigger
+                    };
+                    return { ...section, metrics: updatedMetrics };
+                  }
+                  return section;
+                });
+              });
+            });
+        });
       }
     };
     initApp();
@@ -2183,86 +2314,138 @@ export function Dashboard() {
 
   const fetchAllDataInternal = async (configRef: Section[]) => {
     if (configRef.length === 0) return;
-    const fetchPromises: { promise: Promise<any>, sectionIdx: number, metricIdx: number, metric: Metric }[] = [];
-    configRef.forEach((section, sIdx) => {
-      section.metrics.forEach((metric, mIdx) => {
+
+    const metricsToUpdate: { sectionTitle: string, metric: Metric }[] = [];
+    configRef.forEach(section => {
+      section.metrics.forEach(metric => {
         if (metric.sqlQuery) {
-          fetchPromises.push({ promise: postSqlQuery(metric.sqlQuery, metric.id), sectionIdx: sIdx, metricIdx: mIdx, metric });
+          metricsToUpdate.push({ sectionTitle: section.title, metric });
         }
       });
     });
 
-    try {
-      const results = await Promise.all(fetchPromises.map(p => p.promise));
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const nowString = now.toLocaleString('pt-BR');
-      const metricsToUpdate: any[] = [];
-      const newlyFoundErrors: string[] = [];
-      const resolvedErrors: string[] = [];
-      const newlyFoundErrorList: { title: string, data: any[] }[] = [];
-      
-      setData(current => {
-        return current.map(section => {
-          const updatedMetrics = section.metrics.map(metric => {
-            const resultMatch = fetchPromises.find(p => p.metric.id === metric.id);
-            if (resultMatch) {
-              const res = results[fetchPromises.indexOf(resultMatch)];
-              const rowCount = Array.isArray(res) ? res.length : 0;
-              const isNowError = rowCount > 0;
-              const wasError = metric.status === 'error';
-              
-              if (isNowError && !wasError) {
-                newlyFoundErrors.push(metric.title);
-                newlyFoundErrorList.push({ title: metric.title, data: Array.isArray(res) ? res : [] });
-              } else if (!isNowError && wasError) {
-                resolvedErrors.push(metric.title);
-              }
- 
-              const updatedHistory = [rowCount, ...(metric.history || [])].slice(0, 10);
-              const updatedMetric = {
-                ...metric,
-                value: rowCount,
-                details: Array.isArray(res) ? res : [],
-                lastUpdate: nowString,
-                lastUpdateAt: nowIso,
-                status: (rowCount > 0 ? 'error' : 'ok') as 'error' | 'ok',
-                history: updatedHistory
-              };
-              metricsToUpdate.push({ id: metric.id, iso: nowIso, result: res, history: updatedHistory });
-              return updatedMetric;
-            }
-            return metric;
-          });
-          return { ...section, metrics: updatedMetrics };
-        });
-      });
-      metricsToUpdate.forEach(m => saveMetricData(m.id, m.iso, m.result, m.history));
-      setEventLog(prev => ([{ id: Math.random().toString(36).substr(2, 9), message: "Sincronização completada com sucesso.", time: new Date().toLocaleTimeString('pt-BR'), type: 'success' as const }, ...prev] as any).slice(0, 50));
-      
-      // Trigger notifications if needed
-      if (newlyFoundErrors.length > 0) {
-        triggerAlarm(`Alerta! Nova divergência detectada na métrica: ${newlyFoundErrors.join(', ')}`, 'critical');
-        // Trigger emails asynchronously for each detected divergence
-        newlyFoundErrorList.forEach(errItem => {
-          try {
-            sendDivergenceEmail(errItem.title, errItem.data);
-          } catch (e1) {
-            console.error("Error triggering email alarm:", e1);
-          }
+    if (metricsToUpdate.length === 0) return;
 
-          try {
-            sendTeamsNotification(errItem.title, errItem.data);
-          } catch (e2) {
-            console.error("Error triggering Teams alarm:", e2);
+    // Put metrics in a visible visual synchronization state instantly, 
+    // ensuring those that are expired render stable and green initially to remove any load lag!
+    setData(current => {
+      return current.map(section => {
+        const updatedMetrics = section.metrics.map(metric => {
+          const matched = metricsToUpdate.some(m => m.metric.id === metric.id);
+          if (matched) {
+            // Check if metric is expired relative to now
+            let isExpired = false;
+            if (!metric.lastUpdateAt) {
+              isExpired = true;
+            } else {
+              const last = new Date(metric.lastUpdateAt);
+              if (isNaN(last.getTime())) {
+                isExpired = true;
+              } else {
+                const expiryTime = last.getTime() + (metric.refreshInterval || 5) * 60000;
+                isExpired = Date.now() >= expiryTime;
+              }
+            }
+
+            return {
+              ...metric,
+              lastUpdate: 'Sincronizando...',
+              status: isExpired ? 'ok' as const : metric.status,
+              value: isExpired ? 0 : metric.value
+            };
           }
+          return metric;
         });
-      } else if (resolvedErrors.length > 0) {
-        triggerAlarm(`Excelente! Divergência resolvida na métrica: ${resolvedErrors.join(', ')}`, 'success');
-      }
-    } catch (err) {
-      console.error("Data fetch error:", err);
-    }
+        return { ...section, metrics: updatedMetrics };
+      });
+    });
+
+    setEventLog(prev => ([{ 
+      id: Math.random().toString(36).substr(2, 9), 
+      message: "Sincronização em segundo plano iniciada.", 
+      time: new Date().toLocaleTimeString('pt-BR'), 
+      type: 'info' as const 
+    }, ...prev] as any).slice(0, 50));
+
+    // Fire all SQL queries concurrently (Promise.all-equivalent backend execution but progressive client rendering!)
+    metricsToUpdate.forEach(({ metric }, index) => {
+      postSqlQuery(metric.sqlQuery!, metric.id)
+        .then(res => {
+          const resolveNow = new Date();
+          const resolveNowIso = resolveNow.toISOString();
+          const resolveNowString = resolveNow.toLocaleString('pt-BR');
+          const rowCount = Array.isArray(res) ? res.length : 0;
+          const isNowError = rowCount > 0;
+          const wasError = metric.status === 'error';
+
+          const updatedHistory = [rowCount, ...(metric.history || [])].slice(0, 10);
+
+          // Render card outcome immediately as it completes
+          setData(current => {
+            return current.map(section => {
+              const mIdx = section.metrics.findIndex(m => m.id === metric.id);
+              if (mIdx !== -1) {
+                const currentMetric = section.metrics[mIdx];
+                const updatedMetrics = [...section.metrics];
+                updatedMetrics[mIdx] = {
+                  ...currentMetric,
+                  value: rowCount,
+                  details: Array.isArray(res) ? res : [],
+                  lastUpdate: resolveNowString,
+                  lastUpdateAt: resolveNowIso,
+                  status: isNowError ? 'error' : 'ok',
+                  history: updatedHistory
+                };
+                return { ...section, metrics: updatedMetrics };
+              }
+              return section;
+            });
+          });
+
+          // Stagger card writes to SharePoint to keep background services fluent and conflict-free!
+          setTimeout(() => {
+            saveMetricData(metric.id, resolveNowIso, res, updatedHistory)
+              .catch(err => console.error(`Error saving metric data for ${metric.id}:`, err));
+          }, index * 1000);
+
+          // Specific state alert transition router
+          if (isNowError && !wasError) {
+            triggerAlarm(`Alerta! Nova divergência detectada na métrica: ${metric.title}`, 'critical');
+            try {
+              sendDivergenceEmail(metric.title, Array.isArray(res) ? res : []);
+            } catch (e1) {
+              console.error("Error sending email:", e1);
+            }
+            try {
+              sendTeamsNotification(metric.title, Array.isArray(res) ? res : []);
+            } catch (e2) {
+              console.error("Error sending Teams notification:", e2);
+            }
+          } else if (!isNowError && wasError) {
+            triggerAlarm(`Excelente! Divergência resolvida na métrica: ${metric.title}`, 'success');
+          }
+        })
+        .catch(err => {
+          console.error(`Sincronização do card "${metric.title}" falhou em segundo plano:`, err);
+          const resolveNow = new Date();
+          setData(current => {
+            return current.map(section => {
+              const mIdx = section.metrics.findIndex(m => m.id === metric.id);
+              if (mIdx !== -1) {
+                const currentMetric = section.metrics[mIdx];
+                const updatedMetrics = [...section.metrics];
+                updatedMetrics[mIdx] = {
+                  ...currentMetric,
+                  lastUpdate: `Erro de sincronização (${resolveNow.toLocaleTimeString('pt-BR')})`,
+                  lastUpdateAt: resolveNow.toISOString()
+                };
+                return { ...section, metrics: updatedMetrics };
+              }
+              return section;
+            });
+          });
+        });
+    });
   };
 
   const fetchAllData = () => fetchAllDataInternal(data);
