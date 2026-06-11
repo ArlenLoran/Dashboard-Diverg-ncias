@@ -2129,7 +2129,11 @@ export function Dashboard() {
       
       if (savedLayout) {
         try {
-          currentLayout = JSON.parse(savedLayout);
+          const parsed = JSON.parse(savedLayout);
+          if (Array.isArray(parsed)) {
+            // Filter out sections that are no longer in the retrieved list from database/SharePoint config
+            currentLayout = parsed.filter(c => config.some(s => s.title === c.title));
+          }
           // Add missing sections from config to layout
           config.forEach(s => {
             if (!currentLayout.find(c => c.title === s.title)) {
@@ -2272,15 +2276,16 @@ export function Dashboard() {
       const config = await fetchDashboardConfig();
       setData(config);
       
-      // Update layout config if new sections appeared
+      // Update layout config if new sections appeared or old ones were removed
       setLayoutConfig(prev => {
-        const newConfigs = [...prev];
+        // Keep only those that are currently present in the active configuration
+        const activeConfigs = prev.filter(c => config.some(s => s.title === c.title));
         config.forEach(s => {
-          if (!newConfigs.find(c => c.title === s.title)) {
-            newConfigs.push({ title: s.title, width: 33.33 });
+          if (!activeConfigs.find(c => c.title === s.title)) {
+            activeConfigs.push({ title: s.title, width: 33.33 });
           }
         });
-        return newConfigs;
+        return activeConfigs;
       });
 
       try {
